@@ -1,0 +1,127 @@
+name: Deploy FastAPI Docs to GitHub Pages
+
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pages: write
+    id-token: write
+
+concurrency:
+    group: "pages"
+    cancel-in-progress: false
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.11"
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+
+                - name: Generate OpenAPI JSON
+      env:
+        SECRET_KEY: "dummy-secret-key-for-docs-generation"
+        MONGODB_URL: "mongodb://localhost:27017"
+        MONGODB_NAME: "xploitai"
+        GITHUB_CLIENT_ID: "dummy-client-id"
+        GITHUB_CLIENT_SECRET: "dummy-client-secret"
+      run: |
+        python -c "
+        import json
+        import os
+        os.environ.setdefault('SECRET_KEY', 'dummy-secret-key-for-docs-generation')
+        os.environ.setdefault('MONGODB_URL', 'mongodb://localhost:27017')
+        os.environ.setdefault('MONGODB_NAME', 'xploitai')
+        os.environ.setdefault('GITHUB_CLIENT_ID', 'dummy-client-id')
+        os.environ.setdefault('GITHUB_CLIENT_SECRET', 'dummy-client-secret')
+        
+        from app.main import app
+        
+        openapi_schema = app.openapi()
+        
+        with open('openapi.json', 'w') as f:
+            json.dump(openapi_schema, f, indent=2)
+        "
+
+            - name: Generate HTML documentation
+              run: |
+                  mkdir -p docs
+                  cat > docs/index.html << 'EOF'
+                  <!DOCTYPE html>
+                  <html>
+                  <head>
+                      <title>Xploit.ai API Documentation</title>
+                      <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui.css" />
+                      <style>
+                          html {
+                              box-sizing: border-box;
+                              overflow: -moz-scrollbars-vertical;
+                              overflow-y: scroll;
+                          }
+                          *, *:before, *:after {
+                              box-sizing: inherit;
+                          }
+                          body {
+                              margin:0;
+                              background: #fafafa;
+                          }
+                      </style>
+                  </head>
+                  <body>
+                      <div id="swagger-ui"></div>
+                      <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"></script>
+                      <script src="https://unpkg.com/swagger-ui-dist@5.9.0/swagger-ui-standalone-preset.js"></script>
+                      <script>
+                          window.onload = function() {
+                              const ui = SwaggerUIBundle({
+                                  url: './openapi.json',
+                                  dom_id: '#swagger-ui',
+                                  deepLinking: true,
+                                  presets: [
+                                      SwaggerUIBundle.presets.apis,
+                                      SwaggerUIStandalonePreset
+                                  ],
+                                  plugins: [
+                                      SwaggerUIBundle.plugins.DownloadUrl
+                                  ],
+                                  layout: "StandaloneLayout"
+                              });
+                          };
+                      </script>
+                  </body>
+                  </html>
+                  EOF
+
+                  cp openapi.json docs/
+
+            - name: Setup Pages
+              uses: actions/configure-pages@v4
+
+            - name: Upload artifact
+              uses: actions/upload-pages-artifact@v3
+              with:
+                  path: "./docs"
+
+    deploy:
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        runs-on: ubuntu-latest
+        needs: build
+        steps:
+            - name: Deploy to GitHub Pages
+              id: deployment
+              uses: actions/deploy-pages@v4
