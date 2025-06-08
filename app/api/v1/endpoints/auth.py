@@ -11,14 +11,33 @@ from app.api.deps import get_db, get_current_user
 
 router = APIRouter()
 
-@router.get("/github")
+@router.get("/github", summary="Get GitHub OAuth login URL", response_description="Returns the GitHub OAuth authorization URL for user login")
 async def github_login():
+    """
+    Get the GitHub OAuth login URL.
+    
+    Returns:
+        dict: Contains the GitHub OAuth authorization URL
+    """
     return {
         "url": f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={settings.GITHUB_CALLBACK_URL}&scope=repo user"
     }
 
-@router.get("/github/callback")
+@router.get("/github/callback", summary="Handle GitHub OAuth callback", response_description="Returns JWT access token after successful GitHub authentication")
 async def github_callback(code: str, db = Depends(get_db)):
+    """
+    Handle the GitHub OAuth callback after successful authentication.
+    
+    Args:
+        code (str): The authorization code received from GitHub
+        db: Database dependency
+        
+    Returns:
+        dict: Contains access_token and token_type
+        
+    Raises:
+        HTTPException: If GitHub token or user data retrieval fails
+    """
     async with httpx.AsyncClient() as client:
         token_response = await client.post(
             "https://github.com/login/oauth/access_token",
@@ -71,10 +90,17 @@ async def github_callback(code: str, db = Depends(get_db)):
         
         jwt_token = create_access_token(data={"sub": user_id})
         
-        # TODO: Implement frontend redirect with proper token handling
-        # For now, return token in response
         return {"access_token": jwt_token, "token_type": "bearer"}
 
-@router.get("/me", response_model=User)
+@router.get("/me", response_model=User, summary="Get current user information", response_description="Returns the current authenticated user's information")
 async def read_users_me(current_user: User = Depends(get_current_user)):
-    return current_user 
+    """
+    Get the current authenticated user's information.
+    
+    Args:
+        current_user (User): Current authenticated user dependency
+        
+    Returns:
+        User: Current user's data
+    """
+    return current_user
