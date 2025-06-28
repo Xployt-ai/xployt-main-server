@@ -1,5 +1,6 @@
 from typing import Optional
 from pydantic_settings import BaseSettings
+from pathlib import Path
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Xploit.ai"
@@ -14,6 +15,8 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str
     GITHUB_CLIENT_SECRET: str
     GITHUB_CALLBACK_URL: str = "http://localhost:8000/api/v1/auth/github/callback"
+    
+    REPOS_STORAGE_PATH: Path = Path("local_storage/repos")
     
     class Config:
         env_file = ".env"

@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from bson import ObjectId
 
 from app.api.deps import get_db, get_current_active_user_with_token
 from app.models.user import UserInDB
 from app.models.repository import Repository, RepositoryCreate, RepositoryWithLinkStatus, RepositoryBase
-from app.services.github import get_user_repos
+from app.services.github import get_user_repos, get_repo_details_by_name
+from app.services.git_service import git_service
 
 router = APIRouter()
 
@@ -66,4 +68,51 @@ async def link_repository(
     created_repo = await db["repositories"].find_one({"_id": inserted_repo.inserted_id})
     created_repo["id"] = str(created_repo["_id"])
 
-    return Repository(**created_repo) 
+    return Repository(**created_repo)
+
+@router.post("/{repo_name:path}/clone", status_code=201)
+async def clone_repository(
+    repo_name: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_active_user_with_token),
+):
+    """
+    Clones a repository to the local file system.
+    This implicitly checks for user's permission by using their token.
+    """
+    if not current_user.github_access_token:
+        raise HTTPException(status_code=400, detail="GitHub token not found for user.")
+
+    try:
+        repo_details = await get_repo_details_by_name(
+            current_user.github_access_token, repo_name
+        )
+        clone_url = repo_details["clone_url"]
+
+        repo_path = git_service.clone_repository(
+            repo_url=clone_url,
+            repo_name=repo_name,
+            access_token=current_user.github_access_token
+        )
+        return {"message": "Repository cloned successfully", "path": str(repo_path)}
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get repository details from GitHub: {e}")
+
+@router.post("/{repo_name:path}/pull")
+async def pull_repository_updates(
+    repo_name: str,
+    current_user: UserInDB = Depends(get_current_active_user_with_token),
+):
+    """
+    Pulls the latest changes for a locally cloned repository.
+    """
+    try:
+        repo_path = git_service.pull_repository(repo_name)
+        return {"message": "Repository updated successfully", "path": str(repo_path)}
+    except ValueError as e:
+        # This is raised by our service if the repo isn't cloned yet.
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)) 
