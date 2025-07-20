@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import httpx
@@ -97,8 +98,8 @@ async def github_callback(code: str, db = Depends(get_db)):
         
         jwt_token = create_access_token(data={"sub": user_id})
         
-        auth_response = AuthResponse(access_token=jwt_token, token_type="bearer")
-        return ApiResponse(data=auth_response, message="Authentication successful")
+        redirect_url = f"http://localhost:5173/callback?token={jwt_token}"
+        return RedirectResponse(url=redirect_url)
 
 @router.get("/me", response_model=ApiResponse[User], summary="Get current user information", response_description="Returns the current authenticated user's information")
 async def read_users_me(current_user: User = Depends(get_current_user)):
