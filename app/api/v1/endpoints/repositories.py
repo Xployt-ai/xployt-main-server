@@ -6,12 +6,13 @@ from bson import ObjectId
 from app.api.deps import get_db, get_current_active_user_with_token
 from app.models.user import UserInDB
 from app.models.repository import Repository, RepositoryCreate, RepositoryWithLinkStatus, RepositoryBase
+from app.models.common import RepositoryOperation, ApiResponse
 from app.services.github import get_user_repos, get_repo_details_by_name
 from app.services.git_service import git_service
 
 router = APIRouter()
 
-@router.get("/", response_model=List[RepositoryWithLinkStatus])
+@router.get("/", response_model=ApiResponse[List[RepositoryWithLinkStatus]])
 async def list_user_repositories(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: UserInDB = Depends(get_current_active_user_with_token),
@@ -41,9 +42,9 @@ async def list_user_repositories(
         }
         repos_with_status.append(RepositoryWithLinkStatus(**repo_data))
 
-    return repos_with_status
+    return ApiResponse(data=repos_with_status, message="Repositories retrieved successfully")
 
-@router.post("/", response_model=Repository)
+@router.post("/", response_model=ApiResponse[Repository])
 async def link_repository(
     repo_to_link: RepositoryBase,
     db: AsyncIOMotorDatabase = Depends(get_db),
@@ -68,9 +69,10 @@ async def link_repository(
     created_repo = await db["repositories"].find_one({"_id": inserted_repo.inserted_id})
     created_repo["id"] = str(created_repo["_id"])
 
-    return Repository(**created_repo)
+    repository = Repository(**created_repo)
+    return ApiResponse(data=repository, message="Repository linked successfully")
 
-@router.post("/{repo_name:path}/clone", status_code=201)
+@router.post("/{repo_name:path}/clone", response_model=ApiResponse[RepositoryOperation], status_code=201)
 async def clone_repository(
     repo_name: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
@@ -94,13 +96,18 @@ async def clone_repository(
             repo_name=repo_name,
             access_token=current_user.github_access_token
         )
-        return {"message": "Repository cloned successfully", "path": str(repo_path)}
+        operation = RepositoryOperation(
+            message="Repository cloned successfully", 
+            path=str(repo_path),
+            repository_name=repo_name
+        )
+        return ApiResponse(data=operation)
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get repository details from GitHub: {e}")
 
-@router.post("/{repo_name:path}/pull")
+@router.post("/{repo_name:path}/pull", response_model=ApiResponse[RepositoryOperation])
 async def pull_repository_updates(
     repo_name: str,
     current_user: UserInDB = Depends(get_current_active_user_with_token),
@@ -110,7 +117,12 @@ async def pull_repository_updates(
     """
     try:
         repo_path = git_service.pull_repository(repo_name)
-        return {"message": "Repository updated successfully", "path": str(repo_path)}
+        operation = RepositoryOperation(
+            message="Repository updated successfully", 
+            path=str(repo_path),
+            repository_name=repo_name
+        )
+        return ApiResponse(data=operation)
     except ValueError as e:
         # This is raised by our service if the repo isn't cloned yet.
         raise HTTPException(status_code=404, detail=str(e))
