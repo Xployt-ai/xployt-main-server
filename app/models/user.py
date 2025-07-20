@@ -1,7 +1,6 @@
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
-from decimal import Decimal
 
 # Base user model with common attributes
 class UserBase(BaseModel):
@@ -9,7 +8,6 @@ class UserBase(BaseModel):
     username: str
     email: Optional[EmailStr] = None
     avatar_url: Optional[str] = None
-    credits: Decimal = Field(default=Decimal('0'), description="User's credit balance")
 
 # Model for creating new users with access token
 class UserCreate(UserBase):

@@ -19,6 +19,10 @@ class CreditService:
     async def topup_credits(self, user_id: str, topup_request: CreditTopupRequest) -> CreditTopupResponse:
         user_object_id = ObjectId(user_id)
         
+        user_exists = await self.db["users"].find_one({"_id": user_object_id})
+        if not user_exists:
+            raise ValueError("User not found")
+        
         transaction_create = CreditTransactionCreate(
             user_id=user_id,
             amount=topup_request.amount,
@@ -31,20 +35,21 @@ class CreditService:
                     transaction_create.model_dump(), session=session
                 )
                 
-                user_update_result = await self.db["users"].update_one(
-                    {"_id": user_object_id},
-                    {"$inc": {"credits": float(topup_request.amount)}},
+                credit_update_result = await self.db["user_credits"].update_one(
+                    {"user_id": user_id},
+                    {
+                        "$inc": {"balance": float(topup_request.amount)},
+                        "$set": {"last_updated": datetime.utcnow()}
+                    },
+                    upsert=True,
                     session=session
                 )
                 
-                if user_update_result.matched_count == 0:
-                    raise ValueError("User not found")
-                
-                updated_user = await self.db["users"].find_one(
-                    {"_id": user_object_id}, session=session
+                updated_credits = await self.db["user_credits"].find_one(
+                    {"user_id": user_id}, session=session
                 )
                 
-                new_balance = Decimal(str(updated_user["credits"]))
+                new_balance = Decimal(str(updated_credits["balance"]))
                 
                 return CreditTopupResponse(
                     transaction_id=str(transaction_result.inserted_id),
@@ -54,10 +59,16 @@ class CreditService:
                 )
 
     async def get_user_balance(self, user_id: str) -> Decimal:
-        user = await self.db["users"].find_one({"_id": ObjectId(user_id)})
-        if not user:
+        user_exists = await self.db["users"].find_one({"_id": ObjectId(user_id)})
+        if not user_exists:
             raise ValueError("User not found")
-        return Decimal(str(user.get("credits", 0)))
+            
+        user_credits = await self.db["user_credits"].find_one({"user_id": user_id})
+        if not user_credits:
+            await self._initialize_user_credits(user_id)
+            return Decimal('0')
+        
+        return Decimal(str(user_credits.get("balance", 0)))
 
     async def get_transaction_history(self, user_id: str, limit: int = 50) -> list[CreditTransaction]:
         cursor = self.db["credit_transactions"].find(
@@ -81,4 +92,9 @@ class CreditService:
             return None
             
         transaction_doc["id"] = str(transaction_doc["_id"])
-        return CreditTransaction(**transaction_doc) 
+        return CreditTransaction(**transaction_doc)
+
+    async def _initialize_user_credits(self, user_id: str) -> None:
+        """Initialize credit balance for a user if it doesn't exist"""
+        credit_balance = UserCreditBalance(user_id=user_id)
+        await self.db["user_credits"].insert_one(credit_balance.model_dump()) 

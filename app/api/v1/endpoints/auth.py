@@ -6,6 +6,7 @@ import httpx
 from bson import ObjectId
 from app.core.config import settings
 from app.models.user import User, UserCreate, UserInDB
+from app.models.credit import UserCreditBalance
 from app.core.security import create_access_token
 from app.api.deps import get_db, get_current_user
 
@@ -81,6 +82,10 @@ async def github_callback(code: str, db = Depends(get_db)):
             
             result = await db["users"].insert_one(new_user.model_dump())
             user_id = str(result.inserted_id)
+            
+            # Initialize credit balance for new user
+            credit_balance = UserCreditBalance(user_id=user_id)
+            await db["user_credits"].insert_one(credit_balance.model_dump())
         else:
             user_id = str(user["_id"])
             await db["users"].update_one(
