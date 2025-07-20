@@ -7,24 +7,26 @@ from bson import ObjectId
 from app.core.config import settings
 from app.models.user import User, UserCreate, UserInDB
 from app.models.credit import UserCreditBalance
+from app.models.common import GitHubAuthUrl, AuthResponse, ApiResponse
 from app.core.security import create_access_token
 from app.api.deps import get_db, get_current_user
 
 router = APIRouter()
 
-@router.get("/github", summary="Get GitHub OAuth login URL", response_description="Returns the GitHub OAuth authorization URL for user login")
+@router.get("/github", response_model=ApiResponse[GitHubAuthUrl], summary="Get GitHub OAuth login URL", response_description="Returns the GitHub OAuth authorization URL for user login")
 async def github_login():
     """
     Get the GitHub OAuth login URL.
     
     Returns:
-        dict: Contains the GitHub OAuth authorization URL
+        ApiResponse[GitHubAuthUrl]: Contains the GitHub OAuth authorization URL
     """
-    return {
-        "url": f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={settings.GITHUB_CALLBACK_URL}&scope=repo user"
-    }
+    auth_url = GitHubAuthUrl(
+        url=f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={settings.GITHUB_CALLBACK_URL}&scope=repo user"
+    )
+    return ApiResponse(data=auth_url, message="GitHub OAuth URL generated successfully")
 
-@router.get("/github/callback", summary="Handle GitHub OAuth callback", response_description="Returns JWT access token after successful GitHub authentication")
+@router.get("/github/callback", response_model=ApiResponse[AuthResponse], summary="Handle GitHub OAuth callback", response_description="Returns JWT access token after successful GitHub authentication")
 async def github_callback(code: str, db = Depends(get_db)):
     """
     Handle the GitHub OAuth callback after successful authentication.
@@ -34,7 +36,7 @@ async def github_callback(code: str, db = Depends(get_db)):
         db: Database dependency
         
     Returns:
-        dict: Contains access_token and token_type
+        ApiResponse[AuthResponse]: Contains access_token and token_type
         
     Raises:
         HTTPException: If GitHub token or user data retrieval fails
@@ -95,9 +97,10 @@ async def github_callback(code: str, db = Depends(get_db)):
         
         jwt_token = create_access_token(data={"sub": user_id})
         
-        return {"access_token": jwt_token, "token_type": "bearer"}
+        auth_response = AuthResponse(access_token=jwt_token, token_type="bearer")
+        return ApiResponse(data=auth_response, message="Authentication successful")
 
-@router.get("/me", response_model=User, summary="Get current user information", response_description="Returns the current authenticated user's information")
+@router.get("/me", response_model=ApiResponse[User], summary="Get current user information", response_description="Returns the current authenticated user's information")
 async def read_users_me(current_user: User = Depends(get_current_user)):
     """
     Get the current authenticated user's information.
@@ -106,6 +109,6 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         current_user (User): Current authenticated user dependency
         
     Returns:
-        User: Current user's data
+        ApiResponse[User]: Current user's data
     """
-    return current_user
+    return ApiResponse(data=current_user, message="User information retrieved successfully")
