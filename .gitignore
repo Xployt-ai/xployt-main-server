@@ -1,3 +1,8 @@
 cred.md
 .env
 __pycache__/
+
+# Local storage for cloned repositories
+local_storage/
+
+*.excalidraw
