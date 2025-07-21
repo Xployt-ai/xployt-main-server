@@ -66,7 +66,13 @@ class CreditService:
         user_credits = await self.db["user_credits"].find_one({"user_id": user_id})
         if not user_credits:
             await self._initialize_user_credits(user_id)
-            return Decimal('0')
+            user_credits = {"balance": 0, "last_monthly_topup_at": None}
+        
+        # Check if user is pro and needs monthly topup
+        if user_exists.get("is_pro", False):
+            await self._check_and_apply_monthly_topup(user_id, user_credits)
+            # Refetch credits after potential topup
+            user_credits = await self.db["user_credits"].find_one({"user_id": user_id})
         
         return Decimal(str(user_credits.get("balance", 0)))
 
@@ -97,4 +103,110 @@ class CreditService:
     async def _initialize_user_credits(self, user_id: str) -> None:
         """Initialize credit balance for a user if it doesn't exist"""
         credit_balance = UserCreditBalance(user_id=user_id)
-        await self.db["user_credits"].insert_one(credit_balance.model_dump()) 
+        await self.db["user_credits"].insert_one(credit_balance.model_dump())
+
+    async def subscribe_to_pro(self, user_id: str) -> dict:
+        """Subscribe user to pro plan and give initial monthly credits"""
+        user_object_id = ObjectId(user_id)
+        
+        user = await self.db["users"].find_one({"_id": user_object_id})
+        if not user:
+            raise ValueError("User not found")
+        
+        if user.get("is_pro", False):
+            raise ValueError("User is already a pro user")
+        
+        async with await self.db.client.start_session() as session:
+            async with session.start_transaction():
+                # Update user to pro status
+                await self.db["users"].update_one(
+                    {"_id": user_object_id},
+                    {"$set": {"is_pro": True}},
+                    session=session
+                )
+                
+                # Create transaction for initial pro credits
+                transaction_create = CreditTransactionCreate(
+                    user_id=user_id,
+                    amount=Decimal('500'),
+                    transaction_type="pro_monthly",
+                    description="Pro user monthly credit pack"
+                )
+                
+                await self.db["credit_transactions"].insert_one(
+                    transaction_create.model_dump(), session=session
+                )
+                
+                # Update credit balance and set monthly topup timestamp
+                current_time = datetime.utcnow()
+                await self.db["user_credits"].update_one(
+                    {"user_id": user_id},
+                    {
+                        "$inc": {"balance": 500.0},
+                        "$set": {
+                            "last_updated": current_time,
+                            "last_monthly_topup_at": current_time
+                        }
+                    },
+                    upsert=True,
+                    session=session
+                )
+                
+                return {"message": "Successfully subscribed to pro plan", "credits_added": 500}
+
+    async def unsubscribe_from_pro(self, user_id: str) -> dict:
+        """Unsubscribe user from pro plan"""
+        user_object_id = ObjectId(user_id)
+        
+        user = await self.db["users"].find_one({"_id": user_object_id})
+        if not user:
+            raise ValueError("User not found")
+        
+        if not user.get("is_pro", False):
+            raise ValueError("User is not a pro user")
+        
+        await self.db["users"].update_one(
+            {"_id": user_object_id},
+            {"$set": {"is_pro": False}}
+        )
+        
+        return {"message": "Successfully unsubscribed from pro plan"}
+
+    async def _check_and_apply_monthly_topup(self, user_id: str, user_credits: dict) -> None:
+        """Check if pro user needs monthly topup and apply it"""
+        last_topup = user_credits.get("last_monthly_topup_at")
+        current_time = datetime.utcnow()
+        
+        # If never topped up or more than 30 days since last topup
+        should_topup = (
+            last_topup is None or 
+            (current_time - last_topup).days >= 30
+        )
+        
+        if should_topup:
+            async with await self.db.client.start_session() as session:
+                async with session.start_transaction():
+                    # Create transaction for monthly pro credits
+                    transaction_create = CreditTransactionCreate(
+                        user_id=user_id,
+                        amount=Decimal('500'),
+                        transaction_type="pro_monthly",
+                        description="Pro user monthly credit pack"
+                    )
+                    
+                    await self.db["credit_transactions"].insert_one(
+                        transaction_create.model_dump(), session=session
+                    )
+                    
+                    # Update credit balance and monthly topup timestamp
+                    await self.db["user_credits"].update_one(
+                        {"user_id": user_id},
+                        {
+                            "$inc": {"balance": 500.0},
+                            "$set": {
+                                "last_updated": current_time,
+                                "last_monthly_topup_at": current_time
+                            }
+                        },
+                        session=session
+                    ) 

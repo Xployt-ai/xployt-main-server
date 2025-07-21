@@ -8,6 +8,7 @@ class UserBase(BaseModel):
     username: str
     email: Optional[EmailStr] = None
     avatar_url: Optional[str] = None
+    is_pro: bool = Field(default=False, description="Whether user has pro subscription")
 
 # Model for creating new users with access token
 class UserCreate(UserBase):
