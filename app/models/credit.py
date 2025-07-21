@@ -40,4 +40,5 @@ class CreditTopupResponse(BaseModel):
 class UserCreditBalance(BaseModel):
     user_id: str
     balance: Decimal = Field(default=Decimal('0'))
-    last_updated: datetime = Field(default_factory=datetime.utcnow) 
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    last_monthly_topup_at: Optional[datetime] = Field(default=None, description="Last time user received monthly pro credits") 
