@@ -1,6 +1,7 @@
 from typing import Optional, Any, Generic, TypeVar
 from pydantic import BaseModel, Field
 from datetime import datetime
+from decimal import Decimal
 
 T = TypeVar('T')
 
@@ -33,6 +34,11 @@ class RepositoryOperation(BaseModel):
     repository_name: Optional[str] = None
 
 class CreditBalanceResponse(BaseModel):
-    balance: Any
+    balance: Decimal
     user_id: str
-    last_updated: Optional[datetime] = None 
+    last_updated: Optional[datetime] = None
+
+    class Config:
+        json_encoders = {
+            Decimal: lambda v: float(v)
+        }

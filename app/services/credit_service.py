@@ -16,6 +16,14 @@ class CreditService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
 
+    def _decimal_to_float(self, value: Decimal) -> float:
+        """Convert Decimal to float for MongoDB storage"""
+        return float(value)
+
+    def _float_to_decimal(self, value: float) -> Decimal:
+        """Convert float from MongoDB to Decimal"""
+        return Decimal(str(value))
+
     async def topup_credits(self, user_id: str, topup_request: CreditTopupRequest) -> CreditTopupResponse:
         user_object_id = ObjectId(user_id)
         
@@ -29,16 +37,20 @@ class CreditService:
             description=topup_request.description or "Credit topup"
         )
         
+        # Convert Decimal to dict with float for MongoDB storage
+        transaction_data = transaction_create.model_dump()
+        transaction_data["amount"] = self._decimal_to_float(transaction_create.amount)
+
         async with await self.db.client.start_session() as session:
             async with session.start_transaction():
                 transaction_result = await self.db["credit_transactions"].insert_one(
-                    transaction_create.model_dump(), session=session
+                    transaction_data, session=session
                 )
                 
                 credit_update_result = await self.db["user_credits"].update_one(
                     {"user_id": user_id},
                     {
-                        "$inc": {"balance": float(topup_request.amount)},
+                        "$inc": {"balance": self._decimal_to_float(topup_request.amount)},
                         "$set": {"last_updated": datetime.utcnow()}
                     },
                     upsert=True,
@@ -49,8 +61,8 @@ class CreditService:
                     {"user_id": user_id}, session=session
                 )
                 
-                new_balance = Decimal(str(updated_credits["balance"]))
-                
+                new_balance = self._float_to_decimal(updated_credits["balance"])
+
                 return CreditTopupResponse(
                     transaction_id=str(transaction_result.inserted_id),
                     amount=topup_request.amount,
@@ -66,15 +78,15 @@ class CreditService:
         user_credits = await self.db["user_credits"].find_one({"user_id": user_id})
         if not user_credits:
             await self._initialize_user_credits(user_id)
-            user_credits = {"balance": 0, "last_monthly_topup_at": None}
-        
+            user_credits = {"balance": 0.0, "last_monthly_topup_at": None}
+
         # Check if user is pro and needs monthly topup
         if user_exists.get("is_pro", False):
             await self._check_and_apply_monthly_topup(user_id, user_credits)
             # Refetch credits after potential topup
             user_credits = await self.db["user_credits"].find_one({"user_id": user_id})
         
-        return Decimal(str(user_credits.get("balance", 0)))
+        return self._float_to_decimal(user_credits.get("balance", 0.0))
 
     async def get_transaction_history(self, user_id: str, limit: int = 50) -> list[CreditTransaction]:
         cursor = self.db["credit_transactions"].find(
@@ -84,6 +96,8 @@ class CreditService:
         transactions = []
         async for transaction_doc in cursor:
             transaction_doc["id"] = str(transaction_doc["_id"])
+            # Convert float back to Decimal for the model
+            transaction_doc["amount"] = self._float_to_decimal(transaction_doc["amount"])
             transactions.append(CreditTransaction(**transaction_doc))
         
         return transactions
@@ -98,12 +112,19 @@ class CreditService:
             return None
             
         transaction_doc["id"] = str(transaction_doc["_id"])
+        # Convert float back to Decimal for the model
+        transaction_doc["amount"] = self._float_to_decimal(transaction_doc["amount"])
         return CreditTransaction(**transaction_doc)
 
     async def _initialize_user_credits(self, user_id: str) -> None:
         """Initialize credit balance for a user if it doesn't exist"""
-        credit_balance = UserCreditBalance(user_id=user_id)
-        await self.db["user_credits"].insert_one(credit_balance.model_dump())
+        credit_balance_data = {
+            "user_id": user_id,
+            "balance": 0.0,  # Store as float in MongoDB
+            "last_updated": datetime.utcnow(),
+            "last_monthly_topup_at": None
+        }
+        await self.db["user_credits"].insert_one(credit_balance_data)
 
     async def subscribe_to_pro(self, user_id: str) -> dict:
         """Subscribe user to pro plan and give initial monthly credits"""
@@ -126,15 +147,16 @@ class CreditService:
                 )
                 
                 # Create transaction for initial pro credits
-                transaction_create = CreditTransactionCreate(
-                    user_id=user_id,
-                    amount=Decimal('500'),
-                    transaction_type="pro_monthly",
-                    description="Pro user monthly credit pack"
-                )
-                
+                transaction_data = {
+                    "user_id": user_id,
+                    "amount": 500.0,  # Store as float
+                    "transaction_type": "pro_monthly",
+                    "description": "Pro user monthly credit pack",
+                    "created_at": datetime.utcnow()
+                }
+
                 await self.db["credit_transactions"].insert_one(
-                    transaction_create.model_dump(), session=session
+                    transaction_data, session=session
                 )
                 
                 # Update credit balance and set monthly topup timestamp
@@ -187,15 +209,16 @@ class CreditService:
             async with await self.db.client.start_session() as session:
                 async with session.start_transaction():
                     # Create transaction for monthly pro credits
-                    transaction_create = CreditTransactionCreate(
-                        user_id=user_id,
-                        amount=Decimal('500'),
-                        transaction_type="pro_monthly",
-                        description="Pro user monthly credit pack"
-                    )
-                    
+                    transaction_data = {
+                        "user_id": user_id,
+                        "amount": 500.0,  # Store as float
+                        "transaction_type": "pro_monthly",
+                        "description": "Pro user monthly credit pack",
+                        "created_at": current_time
+                    }
+
                     await self.db["credit_transactions"].insert_one(
-                        transaction_create.model_dump(), session=session
+                        transaction_data, session=session
                     )
                     
                     # Update credit balance and monthly topup timestamp
@@ -209,4 +232,4 @@ class CreditService:
                             }
                         },
                         session=session
-                    ) 
+                    )
