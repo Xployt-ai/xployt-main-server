@@ -53,12 +53,10 @@ class VulnerabilityCreate(VulnerabilityBase):
 class VulnerabilityInDB(VulnerabilityBase):
     id: str
     scan_id: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Vulnerability(VulnerabilityBase):
     id: str
     scan_id: str
-    created_at: datetime
 
     class Config:
         from_attributes = True 
