@@ -40,6 +40,7 @@ class CreditService:
         # Convert Decimal to dict with float for MongoDB storage
         transaction_data = transaction_create.model_dump()
         transaction_data["amount"] = self._decimal_to_float(transaction_create.amount)
+        transaction_data["status"] = "completed"  # Add status field
 
         async with await self.db.client.start_session() as session:
             async with session.start_transaction():
@@ -95,11 +96,16 @@ class CreditService:
         
         transactions = []
         async for transaction_doc in cursor:
-            transaction_doc["id"] = str(transaction_doc["_id"])
+            # Convert MongoDB document to dict and add missing fields
+            transaction_dict = dict(transaction_doc)
+            transaction_dict["id"] = str(transaction_dict["_id"])
             # Convert float back to Decimal for the model
-            transaction_doc["amount"] = self._float_to_decimal(transaction_doc["amount"])
-            transactions.append(CreditTransaction(**transaction_doc))
-        
+            transaction_dict["amount"] = self._float_to_decimal(transaction_dict["amount"])
+            # Add default status if missing
+            if "status" not in transaction_dict:
+                transaction_dict["status"] = "completed"
+            transactions.append(CreditTransaction(**transaction_dict))
+
         return transactions
 
     async def get_transaction_by_id(self, transaction_id: str, user_id: str) -> Optional[CreditTransaction]:
@@ -111,10 +117,15 @@ class CreditService:
         if not transaction_doc:
             return None
             
-        transaction_doc["id"] = str(transaction_doc["_id"])
+        # Convert MongoDB document to dict and add missing fields
+        transaction_dict = dict(transaction_doc)
+        transaction_dict["id"] = str(transaction_dict["_id"])
         # Convert float back to Decimal for the model
-        transaction_doc["amount"] = self._float_to_decimal(transaction_doc["amount"])
-        return CreditTransaction(**transaction_doc)
+        transaction_dict["amount"] = self._float_to_decimal(transaction_dict["amount"])
+        # Add default status if missing
+        if "status" not in transaction_dict:
+            transaction_dict["status"] = "completed"
+        return CreditTransaction(**transaction_dict)
 
     async def _initialize_user_credits(self, user_id: str) -> None:
         """Initialize credit balance for a user if it doesn't exist"""
@@ -152,7 +163,8 @@ class CreditService:
                     "amount": 500.0,  # Store as float
                     "transaction_type": "pro_monthly",
                     "description": "Pro user monthly credit pack",
-                    "created_at": datetime.utcnow()
+                    "created_at": datetime.utcnow(),
+                    "status": "completed"  # Add status field
                 }
 
                 await self.db["credit_transactions"].insert_one(
@@ -214,7 +226,8 @@ class CreditService:
                         "amount": 500.0,  # Store as float
                         "transaction_type": "pro_monthly",
                         "description": "Pro user monthly credit pack",
-                        "created_at": current_time
+                        "created_at": current_time,
+                        "status": "completed"  # Add status field
                     }
 
                     await self.db["credit_transactions"].insert_one(
