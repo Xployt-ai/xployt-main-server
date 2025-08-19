@@ -105,17 +105,40 @@ async def stream_scan_status(
 ):
     """
     Stream real-time scan progress updates via Server-Sent Events (SSE).
+    
+    This endpoint provides real-time updates for scan progress including:
+    - Connection establishment
+    - Progress updates (only when status changes)
+    - Completion/failure notifications
+    - Error handling
+    
+    The stream automatically closes when the scan completes or fails.
+    Maximum connection time is 1 hour to prevent resource leaks.
     """
-    # Verify scan exists and belongs to user
-    scan = await db["scans"].find_one({
-        "_id": ObjectId(scan_id),
-        "user_id": current_user.id
-    })
+    try:
+        # Verify scan exists and belongs to user
+        scan = await db["scans"].find_one({
+            "_id": ObjectId(scan_id),
+            "user_id": current_user.id
+        })
+        
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        
+        # Return SSE response with proper headers
+        return EventSourceResponse(
+            stream_scan_progress(db, scan_id),
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
     
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-    
-    return EventSourceResponse(stream_scan_progress(db, scan_id))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start SSE stream: {str(e)}")
 
 @router.get("/{scan_id}/results", response_model=ApiResponse[List[Vulnerability]])
 async def get_scan_results(
