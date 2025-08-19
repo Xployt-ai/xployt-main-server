@@ -110,20 +110,20 @@ async def stream_scan_progress(db: AsyncIOMotorDatabase, scan_id: str) -> AsyncG
     max_connection_time = 3600  # 1 hour max connection time
     
     try:
-        yield f"data: {json.dumps({'event': 'connected', 'scan_id': scan_id, 'timestamp': connection_start.isoformat()})}\n\n"
+        yield json.dumps({'event': 'connected', 'scan_id': scan_id, 'timestamp': connection_start.isoformat()})
         
         while True:
             try:
                 # Check connection timeout
                 if (datetime.now(timezone.utc) - connection_start).total_seconds() > max_connection_time:
-                    yield f"data: {json.dumps({'error': 'Connection timeout', 'scan_id': scan_id})}\n\n"
+                    yield json.dumps({'error': 'Connection timeout', 'scan_id': scan_id})
                     break
                 
                 # Get current scan status from database
                 scan = await db["scans"].find_one({"_id": ObjectId(scan_id)})
                 
                 if not scan:
-                    yield f"data: {json.dumps({'error': 'Scan not found', 'scan_id': scan_id})}\n\n"
+                    yield json.dumps({'error': 'Scan not found', 'scan_id': scan_id})
                     break
                 
                 current_update_time = scan.get("updated_at", scan.get("created_at"))
@@ -139,26 +139,26 @@ async def stream_scan_progress(db: AsyncIOMotorDatabase, scan_id: str) -> AsyncG
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     
-                    yield f"data: {json.dumps(scan_status)}\n\n"
+                    yield json.dumps(scan_status)
                     last_update_time = current_update_time
                 
                 # If scan is completed or failed, send final update and close stream
                 if scan["status"] in ["completed", "failed"]:
-                    yield f"data: {json.dumps({'event': 'finished', 'scan_id': scan_id, 'final_status': scan['status']})}\n\n"
+                    yield json.dumps({'event': 'finished', 'scan_id': scan_id, 'final_status': scan['status']})
                     break
                     
                 # Wait before checking again
                 await asyncio.sleep(1)
                 
             except Exception as e:
-                yield f"data: {json.dumps({'error': f'Stream error: {str(e)}', 'scan_id': scan_id})}\n\n"
+                yield json.dumps({'error': f'Stream error: {str(e)}', 'scan_id': scan_id})
                 break
     
     except asyncio.CancelledError:
         # Client disconnected
-        yield f"data: {json.dumps({'event': 'disconnected', 'scan_id': scan_id})}\n\n"
+        yield json.dumps({'event': 'disconnected', 'scan_id': scan_id})
     except Exception as e:
-        yield f"data: {json.dumps({'error': f'Connection error: {str(e)}', 'scan_id': scan_id})}\n\n"
+        yield json.dumps({'error': f'Connection error: {str(e)}', 'scan_id': scan_id})
 
 async def connect_to_scanner_service(scanner_url: str, scan_data: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
     """

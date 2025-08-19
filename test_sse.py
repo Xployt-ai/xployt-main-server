@@ -41,8 +41,8 @@ async def mock_scan_progress() -> AsyncGenerator[str, None]:
             **step
         }
         
-        # Format as SSE event
-        yield f"data: {json.dumps(message_data)}\n\n"
+        # Yield JSON data - EventSourceResponse handles SSE formatting
+        yield json.dumps(message_data)
         
         # Wait between progress updates (simulate real scan time)
         await asyncio.sleep(2.0)
