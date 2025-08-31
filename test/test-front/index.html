@@ -88,6 +88,28 @@
                 border-radius: 3px;
                 margin: 5px 0;
             }
+            textarea {
+                width: 100%;
+                padding: 8px;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+                margin: 5px 0;
+                font-family: monospace;
+            }
+            .progress-bar {
+                background: #eee;
+                border-radius: 4px;
+                height: 12px;
+                overflow: hidden;
+                margin-top: 6px;
+            }
+            .progress-bar > span {
+                display: block;
+                height: 100%;
+                background: #28a745;
+                width: 0%;
+                transition: width 0.2s ease;
+            }
         </style>
     </head>
     <body>
@@ -136,11 +158,40 @@
                     the token from the callback URL and paste it above.
                 </div>
             </div>
+
+            <div class="section">
+                <h3>6. Run Scan</h3>
+                <div>
+                    <label>Repository Name</label>
+                    <input type="text" id="repoInput" placeholder="owner/repo or path" />
+                </div>
+                <div>
+                    <label>Scanner Name</label>
+                    <select id="scannerSelect">
+                        <option value="static_scanner">static_scanner</option>
+                        <option value="llm_scanner">llm_scanner</option>
+                        <option value="dast_scanner">dast_scanner</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Configurations (JSON)</label>
+                    <textarea id="configInput" rows="4" placeholder="{}"></textarea>
+                </div>
+                <div>
+                    <button onclick="startScan()">Start Scan</button>
+                    <button id="stopStreamBtn" onclick="stopStream()" disabled>Stop Stream</button>
+                </div>
+                <div id="scanStartResult"></div>
+                <div id="scanProgress"></div>
+                <div id="scanResults"></div>
+            </div>
         </div>
 
         <script>
             const API_BASE = "http://localhost:8000"
             let accessToken = localStorage.getItem("xploitai_token")
+            let currentScanId = null
+            let sseAbortController = null
 
             // Update token display on page load
             document.addEventListener("DOMContentLoaded", function () {
@@ -213,12 +264,14 @@
                     )
                     const data = await response.json()
 
-                    if (response.ok && data.url) {
+                    const url = (data && data.data && data.data.url) || data.url
+
+                    if (response.ok && url) {
                         resultDiv.innerHTML = `
                         <div class="success">✅ GitHub OAuth URL received!</div>
                         <div class="info">
                             <p>Click the link below to authenticate with GitHub:</p>
-                            <a href="${data.url}" target="_blank" style="color: #0366d6; text-decoration: none;">
+                            <a href="${url}" target="_blank" style="color: #0366d6; text-decoration: none;">
                                 🔗 Authenticate with GitHub
                             </a>
                             <p><small>After authentication, you'll be redirected back with a token.</small></p>
@@ -289,6 +342,158 @@
                     }
                 } catch (error) {
                     resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`
+                }
+            }
+
+            function setProgress(status, percent, text) {
+                const p = Math.max(0, Math.min(100, Number(percent) || 0))
+                document.getElementById("scanProgress").innerHTML = `
+                    <div class="info">Status: ${status} (${p}%) - ${text || ""}</div>
+                    <div class="progress-bar"><span style="width:${p}%"></span></div>
+                `
+            }
+
+            async function startScan() {
+                const repo = document.getElementById("repoInput").value.trim()
+                const scanner = document.getElementById("scannerSelect").value
+                const startDiv = document.getElementById("scanStartResult")
+
+                
+                if (!repo || !scanner) {
+                    startDiv.innerHTML = '<div class="error">❌ Repository and scanner are required.</div>'
+                    return
+                }
+
+                let configurations = {}
+                const cfgRaw = document.getElementById("configInput").value.trim()
+                if (cfgRaw) {
+                    try { configurations = JSON.parse(cfgRaw) } catch (e) {
+                        startDiv.innerHTML = `<div class="error">❌ Invalid configurations JSON: ${e.message}</div>`
+                        return
+                    }
+                }
+
+                startDiv.innerHTML = '<div class="info">🔄 Starting scan...</div>'
+                document.getElementById("scanResults").innerHTML = ""
+                document.getElementById("scanProgress").innerHTML = ""
+
+                try {
+                    const res = await fetch(`${API_BASE}/api/v1/scans/`, {
+                        method: "POST",
+                        headers: {
+                            Authorization: `Bearer ${accessToken}`,
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            repository_name: repo,
+                            scanner_name: scanner,
+                            configurations,
+                        }),
+                    })
+                    const data = await res.json()
+                    if (!res.ok) {
+                        startDiv.innerHTML = `<div class="error">❌ Failed to start scan (${res.status})</div><pre>${JSON.stringify(data, null, 2)}</pre>`
+                        return
+                    }
+                    const scanId = data?.data?.scan_id
+                    if (!scanId) {
+                        startDiv.innerHTML = `<div class="error">❌ No scan_id in response</div><pre>${JSON.stringify(data, null, 2)}</pre>`
+                        return
+                    }
+                    currentScanId = scanId
+                    startDiv.innerHTML = `<div class="success">✅ Scan started. ID: ${scanId}</div>`
+                    setProgress("connecting", 0, "Connecting...")
+                    streamScan(scanId)
+                } catch (e) {
+                    startDiv.innerHTML = `<div class="error">❌ Error: ${e.message}</div>`
+                }
+            }
+
+            async function streamScan(scanId) {
+                const btn = document.getElementById("stopStreamBtn")
+                btn.disabled = false
+                sseAbortController = new AbortController()
+                try {
+                    const res = await fetch(`${API_BASE}/api/v1/scans/${scanId}/stream`, {
+                        method: "GET",
+                        headers: { Authorization: `Bearer ${accessToken}` },
+                        signal: sseAbortController.signal,
+                    })
+                    if (!res.ok || !res.body) {
+                        document.getElementById("scanProgress").innerHTML = `<div class="error">❌ Failed to open stream (${res.status})</div>`
+                        return
+                    }
+                    const reader = res.body.getReader()
+                    const decoder = new TextDecoder("utf-8")
+                    let buffer = ""
+                    while (true) {
+                        const { value, done } = await reader.read()
+                        if (done) break
+                        buffer += decoder.decode(value, { stream: true })
+                        const lines = buffer.split("\n")
+                        buffer = lines.pop() || ""
+                        for (const line of lines) {
+                            const t = line.trim()
+                            if (!t || !t.startsWith("data:")) continue
+                            const payload = t.slice(5).trim()
+                            if (!payload) continue
+                            let evt
+                            try { evt = JSON.parse(payload) } catch { continue }
+                            handleSseEvent(evt)
+                        }
+                    }
+                } catch (e) {
+                    if (e.name !== "AbortError") {
+                        document.getElementById("scanProgress").innerHTML = `<div class="error">❌ Stream error: ${e.message}</div>`
+                    }
+                } finally {
+                    btn.disabled = true
+                    sseAbortController = null
+                }
+            }
+
+            function stopStream() {
+                if (sseAbortController) sseAbortController.abort()
+            }
+
+            function handleSseEvent(evt) {
+                if (evt.error) {
+                    document.getElementById("scanProgress").innerHTML = `<div class="error">❌ ${evt.error}</div>`
+                    return
+                }
+                if (evt.event === "connected") {
+                    setProgress("connecting", 0, "Connected")
+                    return
+                }
+                if (evt.event === "progress") {
+                    setProgress(evt.status || "scanning", evt.progress_percent ?? 0, evt.progress_text || "")
+                    return
+                }
+                if (evt.event === "finished") {
+                    setProgress(evt.final_status || "finished", 100, "")
+                    if ((evt.final_status || "") === "completed" && currentScanId) {
+                        fetchResults(currentScanId)
+                    }
+                    return
+                }
+            }
+
+            async function fetchResults(scanId) {
+                const resDiv = document.getElementById("scanResults")
+                resDiv.innerHTML = '<div class="info">🔄 Fetching results...</div>'
+                try {
+                    const res = await fetch(`${API_BASE}/api/v1/scans/${scanId}/results`, {
+                        headers: { Authorization: `Bearer ${accessToken}` },
+                    })
+                    const data = await res.json()
+                    if (!res.ok) {
+                        resDiv.innerHTML = `<div class="error">❌ Failed to fetch results (${res.status})</div><pre>${JSON.stringify(data, null, 2)}</pre>`
+                        return
+                    }
+                    const vulns = data?.data || []
+                    resDiv.innerHTML = `<div class="success">✅ Results fetched (${vulns.length})</div><pre>${JSON.stringify(vulns, null, 2)}</pre>`
+                } catch (e) {
+                    resDiv.innerHTML = `<div class="error">❌ Error: ${e.message}</div>`
                 }
             }
         </script>
