@@ -135,11 +135,21 @@ The system supports two modes:
 
 ### Scanner Service Protocol
 
-Scanner services should expose SSE endpoints that stream progress updates:
+Scanner services must implement the SSE interface specification to integrate with the main server.
 
+**For Scanner Service Developers**: See the complete [Scanner Service Protocol Specification](./SCANNER_SERVICE_PROTOCOL.md) for detailed implementation requirements.
+
+**Summary**:
+- Expose `POST /scan` endpoint that responds with SSE streams
+- Follow standardized message format and status values
+- Handle errors gracefully and report via SSE
+- Include vulnerability data in completion messages
+
+**Quick Reference**:
 ```
 POST /scan
 Content-Type: application/json
+Accept: text/event-stream
 
 {
     "scan_id": "string",
@@ -148,14 +158,7 @@ Content-Type: application/json
 }
 ```
 
-**Response**: SSE stream with progress updates
-
-**Expected SSE Format**:
-```
-data: {"status": "scanning", "progress_percent": 30, "message": "Analyzing files..."}
-
-data: {"status": "completed", "progress_percent": 100, "vulnerabilities": [...]}
-```
+**Response**: SSE stream with progress updates following [Scanner Service Protocol](./SCANNER_SERVICE_PROTOCOL.md)
 
 ### Configuration
 
