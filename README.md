@@ -47,3 +47,33 @@ Once running, visit:
 
 -   **Swagger UI**: http://localhost:8000/docs
 -   **ReDoc**: http://localhost:8000/redoc
+
+## SSE Real-Time Streaming
+
+The platform supports real-time scan progress updates via Server-Sent Events (SSE). This enables frontend applications to receive live updates during scan execution instead of polling for status.
+
+### Documentation
+
+- **[SSE Integration Guide](./docs/SSE_INTEGRATION.md)** - Frontend integration examples and API usage
+- **[Scanner Service Protocol](./docs/SCANNER_SERVICE_PROTOCOL.md)** - Interface specification for scanner services  
+- **[Local Testing Guide](./docs/LOCAL_TESTING_GUIDE.md)** - Setup and testing instructions
+
+### Quick Test
+
+```bash
+# Test SSE functionality locally
+python test_sse.py
+# Visit http://localhost:3000 for interactive demo
+
+# Or use the main server test page
+python run.py  
+# Visit http://localhost:8000/docs/sse_test.html
+```
+
+### Key Features
+
+- ✅ Real-time progress streaming via SSE
+- ✅ Frontend WebSocket-like experience with standard HTTP
+- ✅ Automatic connection management and error handling
+- ✅ Backward compatibility with polling endpoints
+- ✅ Comprehensive testing and documentation

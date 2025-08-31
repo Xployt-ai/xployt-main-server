@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE Scan Progress Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #ddd;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            border-radius: 10px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        .log {
+            background: #000;
+            color: #0f0;
+            padding: 10px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            border-radius: 4px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            font-weight: bold;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        .status.pending { background: #fff3cd; }
+        .status.scanning { background: #cce5ff; }
+        .status.completed { background: #d4edda; }
+        .status.failed { background: #f8d7da; }
+    </style>
+</head>
+<body>
+    <h1>SSE Scan Progress Test</h1>
+    
+    <div class="container">
+        <h3>Mock SSE Test</h3>
+        <p>This demonstrates SSE functionality with mock data since we don't have auth/database setup.</p>
+        
+        <button id="startMockScan">Start Mock Scan</button>
+        <button id="stopMockScan" disabled>Stop Mock Scan</button>
+        
+        <div style="margin: 10px 0;">
+            <strong>Status:</strong> <span id="status" class="status pending">Ready</span>
+        </div>
+        
+        <div>
+            <strong>Progress:</strong>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <span id="progressText">0% - Ready to start</span>
+        </div>
+    </div>
+    
+    <div class="container">
+        <h3>Connection Log</h3>
+        <div id="log" class="log"></div>
+    </div>
+
+    <div class="container">
+        <h3>SSE Message Format</h3>
+        <p>Messages are formatted as:</p>
+        <pre><code>data: {"scan_id": "123", "status": "scanning", "progress_percent": 45, "progress_text": "Analyzing...", "timestamp": "2025-08-19T01:43:09Z"}</code></pre>
+    </div>
+
+    <script>
+        let mockEventSource = null;
+        let mockScanInterval = null;
+        
+        const statusEl = document.getElementById('status');
+        const progressFillEl = document.getElementById('progressFill');
+        const progressTextEl = document.getElementById('progressText');
+        const logEl = document.getElementById('log');
+        const startBtn = document.getElementById('startMockScan');
+        const stopBtn = document.getElementById('stopMockScan');
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logEl.innerHTML += `[${timestamp}] ${message}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function updateProgress(data) {
+            statusEl.textContent = data.status;
+            statusEl.className = `status ${data.status}`;
+            
+            progressFillEl.style.width = `${data.progress_percent}%`;
+            progressTextEl.textContent = `${data.progress_percent}% - ${data.progress_text}`;
+            
+            log(`Progress: ${data.progress_percent}% - ${data.status} - ${data.progress_text}`);
+        }
+
+        function simulateMockSSE() {
+            log('Starting mock SSE simulation...');
+            
+            const mockSteps = [
+                { status: 'pending', progress_percent: 0, progress_text: 'Initializing...' },
+                { status: 'cloning', progress_percent: 10, progress_text: 'Cloning repository...' },
+                { status: 'scanning', progress_percent: 25, progress_text: 'Running secret scanner...' },
+                { status: 'scanning', progress_percent: 50, progress_text: 'Analyzing part 1 of 4...' },
+                { status: 'scanning', progress_percent: 75, progress_text: 'Analyzing part 2 of 4...' },
+                { status: 'scanning', progress_percent: 90, progress_text: 'Analyzing part 4 of 4...' },
+                { status: 'saving', progress_percent: 95, progress_text: 'Finalizing and saving results...' },
+                { status: 'completed', progress_percent: 100, progress_text: 'Scan complete.' }
+            ];
+            
+            let stepIndex = 0;
+            
+            mockScanInterval = setInterval(() => {
+                if (stepIndex < mockSteps.length) {
+                    const step = mockSteps[stepIndex];
+                    const mockData = {
+                        scan_id: 'mock-123',
+                        timestamp: new Date().toISOString(),
+                        ...step
+                    };
+                    
+                    log(`SSE: data: ${JSON.stringify(mockData)}`);
+                    updateProgress(mockData);
+                    
+                    stepIndex++;
+                    
+                    if (step.status === 'completed') {
+                        stopMockScan();
+                    }
+                } else {
+                    stopMockScan();
+                }
+            }, 2000);
+        }
+
+        function stopMockScan() {
+            if (mockScanInterval) {
+                clearInterval(mockScanInterval);
+                mockScanInterval = null;
+            }
+            
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            
+            log('Mock scan stopped.');
+        }
+
+        startBtn.addEventListener('click', () => {
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            
+            simulateMockSSE();
+        });
+
+        stopBtn.addEventListener('click', stopMockScan);
+
+        // Initial log message
+        log('SSE Test Page loaded. This simulates the SSE scan progress functionality.');
+        log('In a real implementation, this would connect to /api/v1/scans/{scan_id}/stream');
+    </script>
+</body>
+</html>
