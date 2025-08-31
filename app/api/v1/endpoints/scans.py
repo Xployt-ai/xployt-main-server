@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
+from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.scan import ScanRequest, Scan, ScanStatus, ScanCreate, Vulnerability
 from app.models.common import ApiResponse
-from app.services.scan_service import run_scan
+from app.services.scan_service import stream_scan_progress, run_scan_with_sse
 
 router = APIRouter()
 
@@ -20,6 +21,12 @@ async def start_scan(
 ):
     """
     Start a new scan for the specified repository and scanner.
+    
+    Args:
+        scan_request: Scan configuration including repository and scanner details
+        
+    Returns:
+        ApiResponse containing the scan_id of the started scan
     """
     scan_create = ScanCreate(
         repository_name=scan_request.repository_name,
@@ -32,7 +39,7 @@ async def start_scan(
     scan_id = str(result.inserted_id)
     
     background_tasks.add_task(
-        run_scan,
+        run_scan_with_sse,
         db,
         scan_id,
         scan_request.repository_name,
@@ -76,6 +83,47 @@ async def get_scan_status(
         if isinstance(e, HTTPException):
             raise
         raise HTTPException(status_code=500, detail=f"Failed to get scan status: {str(e)}")
+
+@router.get("/{scan_id}/stream")
+async def stream_scan_status(
+    scan_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Stream real-time scan progress updates via Server-Sent Events (SSE).
+    
+    This endpoint provides real-time updates for scan progress including:
+    - Connection establishment
+    - Progress updates (only when status changes)
+    - Completion/failure notifications
+    - Error handling
+    
+    The stream automatically closes when the scan completes or fails.
+    Maximum connection time is 1 hour to prevent resource leaks.
+    """
+    try:
+        scan = await db["scans"].find_one({
+            "_id": ObjectId(scan_id),
+            "user_id": current_user.id
+        })
+        
+        if not scan:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        
+        return EventSourceResponse(
+            stream_scan_progress(db, scan_id),
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start SSE stream: {str(e)}")
 
 @router.get("/{scan_id}/results", response_model=ApiResponse[List[Vulnerability]])
 async def get_scan_results(
