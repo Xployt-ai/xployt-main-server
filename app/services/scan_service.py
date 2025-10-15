@@ -123,6 +123,29 @@ async def run_scan_with_sse(
     try:
         await update_scan_status(db, scan_id, "connecting", 5, "Connecting to scanner service...")
 
+        if configurations.get("mock"):
+            await update_scan_status(db, scan_id, "scanning", 1, "Scan started")
+            for p, msg in [
+                (5, "Preparing..."),
+                (15, "Indexing files"),
+                (35, "Analyzing"),
+                (60, "Aggregating results"),
+                (85, "Finalizing"),
+            ]:
+                await asyncio.sleep(0.3)
+                await update_scan_status(db, scan_id, "scanning", p, msg)
+            await store_vulnerabilities(db, scan_id, [
+                {
+                    "type": "mock_demo",
+                    "severity": "low",
+                    "description": "This is a mock vulnerability for SSE demo",
+                    "location": {"file_path": "README.md", "line": 1},
+                    "metadata": {"demo": True},
+                }
+            ])
+            await update_scan_status(db, scan_id, "completed", 100, "Mock scan completed")
+            return
+
         base_url = SCANNER_HOSTS.get(scanner_name)
         if not base_url:
             raise ValueError(f"Scanner service not found: {scanner_name}")
