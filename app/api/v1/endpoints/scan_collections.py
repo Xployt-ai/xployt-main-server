@@ -145,9 +145,20 @@ async def stream_collection(
             scan_ids: List[str] = collection.get("scan_ids", [])
             agg_status, agg_progress = await compute_collection_status(db, scan_ids)
 
+            # Fetch all vulnerabilities so far for the collection's scans
+            vulnerabilities: List[Dict[str, Any]] = []
+            if scan_ids:
+                cursor = db["vulnerabilities"].find({"scan_id": {"$in": scan_ids}})
+                async for v in cursor:
+                    v = dict(v)
+                    v["id"] = str(v.get("_id"))
+                    v.pop("_id", None)
+                    vulnerabilities.append(v)
+
             state = {
                 "event": "progress",
                 "collection": {"status": agg_status, "progress_percent": agg_progress},
+                "vulnerabilities": vulnerabilities,
             }
 
             payload = json.dumps(state)
