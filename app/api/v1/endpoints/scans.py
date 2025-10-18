@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
@@ -8,161 +8,48 @@ from app.api.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.scan import ScanRequest, Scan, ScanStatus, ScanCreate, Vulnerability
 from app.models.common import ApiResponse
-from app.services.scan_service import stream_scan_progress, run_scan_with_sse
+from app.services.scan_service import stream_vulnerabilities_for_scan, run_scan_single_response
 
 router = APIRouter()
 
 @router.post("/", response_model=ApiResponse[dict])
 async def start_scan(
     scan_request: ScanRequest,
-    background_tasks: BackgroundTasks,
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Start a new scan for the specified repository and scanner.
-    
-    Args:
-        scan_request: Scan configuration including repository and scanner details
-        
-    Returns:
-        ApiResponse containing the scan_id of the started scan
-    """
-    scan_create = ScanCreate(
-        repository_name=scan_request.repository_name,
-        scanner_name=scan_request.scanner_name,
-        configurations=scan_request.configurations,
-        user_id=current_user.id
-    )
-    
-    result = await db["scans"].insert_one(scan_create.model_dump())
-    scan_id = str(result.inserted_id)
-    
-    background_tasks.add_task(
-        run_scan_with_sse,
-        db,
-        scan_id,
-        scan_request.repository_name,
-        scan_request.scanner_name,
-        scan_request.configurations
-    )
-    
-    return ApiResponse(
-        data={"scan_id": scan_id},
-        message="Scan started successfully"
-    )
-
-@router.get("/{scan_id}", response_model=ApiResponse[ScanStatus])
-async def get_scan_status(
-    scan_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Get the current status and progress of a scan.
+    Create a scan record, execute the single-response scanner, store results, and return only scan_id.
+    Clients should connect to the stream endpoint to receive vulnerabilities.
     """
     try:
-        scan = await db["scans"].find_one({
-            "_id": ObjectId(scan_id),
-            "user_id": current_user.id
-        })
-        
-        if not scan:
-            raise HTTPException(status_code=404, detail="Scan not found")
-        
-        scan_status = ScanStatus(
-            scan_id=scan_id,
-            status=scan["status"],
-            progress_percent=scan["progress_percent"],
-            progress_text=scan["progress_text"]
+        payload = await run_scan_single_response(
+            db=db,
+            repository_name=scan_request.repository_name,
+            scanner_name=scan_request.scanner_name,
+            configurations=scan_request.configurations,
+            user_id=current_user.id,
         )
-        
-        return ApiResponse(data=scan_status, message="Scan status retrieved successfully")
-        
+        return ApiResponse(data={"scan_id": payload.get("scan_id")}, message="Scan created")
     except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail=f"Failed to get scan status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start scan: {str(e)}")
 
 @router.get("/{scan_id}/stream")
-async def stream_scan_status(
+async def stream_scan_vulnerabilities(
     scan_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Stream real-time scan progress updates via Server-Sent Events (SSE).
-    
-    This endpoint provides real-time updates for scan progress including:
-    - Connection establishment
-    - Progress updates (only when status changes)
-    - Completion/failure notifications
-    - Error handling
-    
-    The stream automatically closes when the scan completes or fails.
-    Maximum connection time is 1 hour to prevent resource leaks.
+    Stream vulnerabilities for a scan. Each SSE event has id = progress and data = Vulnerability JSON.
     """
-    try:
-        scan = await db["scans"].find_one({
-            "_id": ObjectId(scan_id),
-            "user_id": current_user.id
-        })
-        
-        if not scan:
-            raise HTTPException(status_code=404, detail="Scan not found")
-        
-        return EventSourceResponse(
-            stream_scan_progress(db, scan_id),
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"  # Disable nginx buffering
-            }
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start SSE stream: {str(e)}")
+    # verify the scan belongs to the user
+    scan = await db["scans"].find_one({"_id": ObjectId(scan_id), "user_id": current_user.id})
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return EventSourceResponse(stream_vulnerabilities_for_scan(db, scan_id))
 
-@router.get("/{scan_id}/results", response_model=ApiResponse[List[Vulnerability]])
-async def get_scan_results(
-    scan_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Get all vulnerability results for a completed scan.
-    """
-    try:
-        scan = await db["scans"].find_one({
-            "_id": ObjectId(scan_id),
-            "user_id": current_user.id
-        })
-        
-        if not scan:
-            raise HTTPException(status_code=404, detail="Scan not found")
-        
-        if scan["status"] != "completed":
-            raise HTTPException(status_code=400, detail="Scan is not yet completed")
-        
-        vulnerabilities_cursor = db["vulnerabilities"].find({"scan_id": scan_id})
-        vulnerabilities_list = await vulnerabilities_cursor.to_list(length=None)
-        
-        vulnerabilities = []
-        for vuln in vulnerabilities_list:
-            vuln["id"] = str(vuln["_id"])
-            vulnerabilities.append(Vulnerability(**vuln))
-        
-        return ApiResponse(
-            data=vulnerabilities,
-            message=f"Found {len(vulnerabilities)} vulnerabilities"
-        )
-        
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail=f"Failed to get scan results: {str(e)}")
+    # old status/results endpoints removed
 
 @router.get("/", response_model=ApiResponse[List[Scan]])
 async def list_user_scans(

@@ -235,18 +235,167 @@ async def run_scan_with_sse(
         await update_scan_status(db, scan_id, "failed", 100, error_message)
 
 async def store_vulnerabilities(db: AsyncIOMotorDatabase, scan_id: str, vulnerabilities: List[Dict[str, Any]]):
-    """Store vulnerabilities from scanner service in database."""
+    """Store vulnerabilities from scanner service in database using the new schema."""
     for vuln_data in vulnerabilities:
-        # Ensure the vulnerability data matches our model
         vuln_create = VulnerabilityCreate(
             scan_id=scan_id,
-            type=vuln_data.get("type", "unknown"),
-            severity=str(vuln_data.get("severity", "unknown")),
+            file_path=vuln_data.get("file_path", ""),
+            line=int(vuln_data.get("line", 0) or 0),
             description=vuln_data.get("description", ""),
-            location={
-                "file_path": vuln_data.get("file_path", ""),
-                "line": vuln_data.get("line", 0),
-            },
-            metadata=vuln_data.get("metadata", {})
+            vulnerability=vuln_data.get("vulnerability", "unknown"),
+            severity=str(vuln_data.get("severity", "unknown")),
+            confidence_level=str(vuln_data.get("confidence_level", "unknown")),
         )
         await db["vulnerabilities"].insert_one(vuln_create.model_dump())
+
+async def stream_vulnerabilities_for_scan(
+    db: AsyncIOMotorDatabase,
+    scan_id: str,
+) -> AsyncGenerator[str, None]:
+    """
+    Fetch single-response from external scanner for given scan, store vulnerabilities,
+    and stream each vulnerability as SSE with id = progress.
+    """
+    scan = await db["scans"].find_one({"_id": ObjectId(scan_id)})
+    if not scan:
+        yield f"id: 0\ndata: {json.dumps({'error': 'Scan not found'})}\n\n"
+        return
+
+    repository_name = scan.get("repository_name")
+    scanner_name = scan.get("scanner_name")
+    configurations = scan.get("configurations") or {}
+
+    # Get payload from external scanner (mock or real)
+    if configurations.get("mock"):
+        payload = {
+            "progress": 100,
+            "status": "complete",
+            "vulnerabilities": [
+                {
+                    "file_path": "config.py",
+                    "line": 15,
+                    "description": "API key found in source code",
+                    "vulnerability": "secret",
+                    "severity": "high",
+                    "confidence_level": "high",
+                }
+            ],
+        }
+    else:
+        base_url = SCANNER_HOSTS.get(scanner_name)
+        if not base_url:
+            yield f"id: 0\ndata: {json.dumps({'error': f'Scanner not found: {scanner_name}'})}\n\n"
+            return
+        scan_url = f"{base_url.rstrip('/')}/scan"
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                response = await client.post(scan_url, json={"path": repository_name})
+                if response.status_code != 200:
+                    yield f"id: 0\ndata: {json.dumps({'error': f'status {response.status_code}'})}\n\n"
+                    return
+                payload = response.json()
+        except Exception as e:
+            yield f"id: 0\ndata: {json.dumps({'error': str(e)})}\n\n"
+            return
+
+    progress = int(payload.get("progress", 0) or 0)
+    status = payload.get("status", "")
+    vulnerabilities = payload.get("vulnerabilities", []) or []
+
+    # Save scan summary and vulnerabilities with minimal transformation
+    await db["scans"].update_one(
+        {"_id": ObjectId(scan_id)},
+        {"$set": {"status": status, "progress_percent": progress}}
+    )
+    if vulnerabilities:
+        await store_vulnerabilities(db, scan_id, vulnerabilities)
+
+    # Stream each vulnerability as SSE with id = progress
+    for vuln in vulnerabilities:
+        yield f"id: {progress}\ndata: {json.dumps(vuln)}\n\n"
+
+    # Emit a final id-only event to indicate completion
+    yield f"id: {progress}\n\n"
+
+async def run_scan_single_response(
+    db: AsyncIOMotorDatabase,
+    repository_name: str,
+    scanner_name: str,
+    configurations: Dict[str, Any],
+    user_id: str,
+) -> Dict[str, Any]:
+    """
+    Run a scan where the scanner returns a single JSON response containing
+    progress, status, and vulnerabilities. Persist scan and vulnerabilities
+    to the database and return the payload.
+    """
+    scan_create = ScanCreate(
+        repository_name=repository_name,
+        scanner_name=scanner_name,
+        configurations=configurations,
+        user_id=user_id,
+    )
+
+    result = await db["scans"].insert_one(scan_create.model_dump())
+    scan_id = str(result.inserted_id)
+
+    # Initial status
+    await update_scan_status(db, scan_id, "connecting", 5, "Connecting to scanner service...")
+
+    # Mock flow for testing
+    if configurations.get("mock"):
+        payload = {
+            "progress": 100,
+            "status": "complete",
+            "vulnerabilities": [
+                {
+                    "file_path": "config.py",
+                    "line": 15,
+                    "description": "API key found in source code",
+                    "vulnerability": "secret",
+                    "severity": "high",
+                    "confidence_level": "high",
+                }
+            ],
+        }
+        await update_scan_status(db, scan_id, "completed", 100, "Scan completed")
+        await store_vulnerabilities(db, scan_id, payload["vulnerabilities"])
+        return {"scan_id": scan_id, **payload}
+
+    base_url = SCANNER_HOSTS.get(scanner_name)
+    if not base_url:
+        await update_scan_status(db, scan_id, "failed", 100, f"Scanner service not found: {scanner_name}")
+        return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}
+
+    scan_url = f"{base_url.rstrip('/')}/scan"
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            response = await client.post(scan_url, json={"path": repository_name})
+            if response.status_code != 200:
+                error_msg = f"Scanner service returned status {response.status_code}"
+                await update_scan_status(db, scan_id, "failed", 100, error_msg)
+                return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}
+
+            data = response.json()
+            progress = int(data.get("progress", 0) or 0)
+            status = str(data.get("status", "scanning"))
+            vulns = data.get("vulnerabilities", []) or []
+
+            # Map external status to our internal status values
+            internal_status = "completed" if status == "complete" or progress >= 100 else "scanning"
+            message = "Scan completed" if internal_status == "completed" else "Processing..."
+            await update_scan_status(db, scan_id, internal_status, progress, message)
+
+            if vulns:
+                await store_vulnerabilities(db, scan_id, vulns)
+
+            payload = {
+                "progress": progress,
+                "status": status,
+                "vulnerabilities": vulns,
+            }
+            return {"scan_id": scan_id, **payload}
+    except Exception as e:
+        error_msg = f"Failed to connect to scanner: {str(e)}"
+        await update_scan_status(db, scan_id, "failed", 100, error_msg)
+        return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}

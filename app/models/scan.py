@@ -41,11 +41,12 @@ class ScanStatus(BaseModel):
     progress_text: str
 
 class VulnerabilityBase(BaseModel):
-    type: str
-    severity: str
+    file_path: str
+    line: int
     description: str
-    location: Dict[str, Any] = Field(default_factory=dict)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    vulnerability: str
+    severity: str
+    confidence_level: str
 
 class VulnerabilityCreate(VulnerabilityBase):
     scan_id: str

@@ -185,7 +185,6 @@
                 </div>
                 <div>
                     <button onclick="startScan()">Start Scan</button>
-                    <button id="stopStreamBtn" onclick="stopStream()" disabled>Stop Stream</button>
                 </div>
                 <div id="scanStartResult"></div>
                 <div id="scanProgress"></div>
@@ -197,7 +196,6 @@
             const API_BASE = "http://localhost:8000"
             let accessToken = localStorage.getItem("xploitai_token")
             let currentScanId = null
-            let sseAbortController = null
 
             // Update token display on page load
             document.addEventListener("DOMContentLoaded", function () {
@@ -411,100 +409,73 @@
                     }
                     currentScanId = scanId
                     startDiv.innerHTML = `<div class="success">✅ Scan started. ID: ${scanId}</div>`
-                    setProgress("connecting", 0, "Connecting...")
-                    streamScan(scanId)
+                    streamVulnerabilities(scanId)
                 } catch (e) {
                     startDiv.innerHTML = `<div class="error">❌ Error: ${e.message}</div>`
                 }
             }
 
-            async function streamScan(scanId) {
-                const btn = document.getElementById("stopStreamBtn")
-                btn.disabled = false
-                sseAbortController = new AbortController()
+            async function streamVulnerabilities(scanId) {
+                const progressDiv = document.getElementById("scanProgress")
+                const resultsDiv = document.getElementById("scanResults")
+                resultsDiv.innerHTML = ""
+                progressDiv.innerHTML = '<div class="info">🔄 Streaming vulnerabilities...</div>'
                 try {
                     const res = await fetch(`${API_BASE}/api/v1/scans/${scanId}/stream`, {
-                        method: "GET",
                         headers: { Authorization: `Bearer ${accessToken}` },
-                        signal: sseAbortController.signal,
                     })
                     if (!res.ok || !res.body) {
-                        document.getElementById("scanProgress").innerHTML = `<div class="error">❌ Failed to open stream (${res.status})</div>`
+                        progressDiv.innerHTML = `<div class="error">❌ Failed to open stream (${res.status})</div>`
                         return
                     }
                     const reader = res.body.getReader()
                     const decoder = new TextDecoder("utf-8")
                     let buffer = ""
+                    let lastId = 0
+                    let count = 0
                     while (true) {
                         const { value, done } = await reader.read()
                         if (done) break
                         buffer += decoder.decode(value, { stream: true })
                         const lines = buffer.split("\n")
                         buffer = lines.pop() || ""
+                        let evtId = null
+                        let evtData = null
                         for (const line of lines) {
                             const t = line.trim()
-                            if (!t || !t.startsWith("data:")) continue
-                            const payload = t.slice(5).trim()
-                            if (!payload) continue
-                            let evt
-                            try { evt = JSON.parse(payload) } catch { continue }
-                            handleSseEvent(evt)
+                            if (!t) continue
+                            if (t.startsWith("id:")) {
+                                evtId = t.slice(3).trim()
+                                continue
+                            }
+                            if (t.startsWith("data:")) {
+                                evtData = t.slice(5).trim()
+                                continue
+                            }
+                            if (t === "") {
+                                // ignore
+                            }
+                        }
+                        if (evtId !== null) {
+                            lastId = Number(evtId) || lastId
+                            setProgress("scanning", lastId, "")
+                        }
+                        if (evtData) {
+                            try {
+                                const vuln = JSON.parse(evtData)
+                                count += 1
+                                const pre = document.createElement("pre")
+                                pre.textContent = JSON.stringify(vuln, null, 2)
+                                resultsDiv.appendChild(pre)
+                            } catch {}
                         }
                     }
+                    setProgress("complete", lastId || 100, "Done")
                 } catch (e) {
-                    if (e.name !== "AbortError") {
-                        document.getElementById("scanProgress").innerHTML = `<div class="error">❌ Stream error: ${e.message}</div>`
-                    }
-                } finally {
-                    btn.disabled = true
-                    sseAbortController = null
+                    progressDiv.innerHTML = `<div class="error">❌ Stream error: ${e.message}</div>`
                 }
             }
-
-            function stopStream() {
-                if (sseAbortController) sseAbortController.abort()
-            }
-
-            function handleSseEvent(evt) {
-                if (evt.error) {
-                    document.getElementById("scanProgress").innerHTML = `<div class="error">❌ ${evt.error}</div>`
-                    return
-                }
-                if (evt.event === "connected") {
-                    setProgress("connecting", 0, "Connected")
-                    return
-                }
-                if (evt.event === "progress") {
-                    setProgress(evt.status || "scanning", evt.progress_percent ?? 0, evt.progress_text || "")
-                    return
-                }
-                if (evt.event === "finished") {
-                    setProgress(evt.final_status || "finished", 100, "")
-                    if ((evt.final_status || "") === "completed" && currentScanId) {
-                        fetchResults(currentScanId)
-                    }
-                    return
-                }
-            }
-
-            async function fetchResults(scanId) {
-                const resDiv = document.getElementById("scanResults")
-                resDiv.innerHTML = '<div class="info">🔄 Fetching results...</div>'
-                try {
-                    const res = await fetch(`${API_BASE}/api/v1/scans/${scanId}/results`, {
-                        headers: { Authorization: `Bearer ${accessToken}` },
-                    })
-                    const data = await res.json()
-                    if (!res.ok) {
-                        resDiv.innerHTML = `<div class="error">❌ Failed to fetch results (${res.status})</div><pre>${JSON.stringify(data, null, 2)}</pre>`
-                        return
-                    }
-                    const vulns = data?.data || []
-                    resDiv.innerHTML = `<div class="success">✅ Results fetched (${vulns.length})</div><pre>${JSON.stringify(vulns, null, 2)}</pre>`
-                } catch (e) {
-                    resDiv.innerHTML = `<div class="error">❌ Error: ${e.message}</div>`
-                }
-            }
+            
         </script>
     </body>
 </html>
