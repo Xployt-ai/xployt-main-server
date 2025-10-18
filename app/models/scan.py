@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -61,3 +61,25 @@ class Vulnerability(VulnerabilityBase):
 
     class Config:
         from_attributes = True 
+
+# --- Scan Collections ---
+
+class ScanCollectionCreate(BaseModel):
+    repository_name: str
+    scanners: List[str]
+    configurations: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScanCollection(BaseModel):
+    id: str
+    user_id: str
+    repository_name: str
+    scanners: List[str]
+    scan_ids: List[str]
+    status: str = "pending"
+    progress_percent: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    finished_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

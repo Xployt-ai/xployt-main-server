@@ -367,6 +367,92 @@ async def run_scan_single_response(
         await update_scan_status(db, scan_id, "failed", 100, f"Scanner service not found: {scanner_name}")
         return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}
 
+
+# --- Scan Collections helpers ---
+
+async def create_scans_for_collection(
+    db: AsyncIOMotorDatabase,
+    user_id: str,
+    repository_name: str,
+    scanners: List[str],
+    configurations: Dict[str, Any],
+) -> List[str]:
+    """Create individual scans for each scanner and start them concurrently."""
+    scan_ids: List[str] = []
+
+    for scanner_name in scanners:
+        scan_create = ScanCreate(
+            repository_name=repository_name,
+            scanner_name=scanner_name,
+            configurations=configurations or {},
+            user_id=user_id,
+        )
+        result = await db["scans"].insert_one(scan_create.model_dump())
+        scan_id = str(result.inserted_id)
+        scan_ids.append(scan_id)
+
+        # Kick off background task without awaiting
+        asyncio.create_task(
+            run_scan_with_sse(
+                db=db,
+                scan_id=scan_id,
+                repository_name=repository_name,
+                scanner_name=scanner_name,
+                configurations=configurations or {},
+            )
+        )
+
+    return scan_ids
+
+
+async def compute_collection_status(
+    db: AsyncIOMotorDatabase,
+    scan_ids: List[str],
+) -> tuple[str, int]:
+    """Compute aggregate collection status and average progress."""
+    if not scan_ids:
+        return ("pending", 0)
+
+    cursor = db["scans"].find({"_id": {"$in": [ObjectId(sid) for sid in scan_ids]}})
+    statuses: List[str] = []
+    progresses: List[int] = []
+    async for scan in cursor:
+        statuses.append(str(scan.get("status", "pending")))
+        try:
+            progresses.append(int(scan.get("progress_percent", 0) or 0))
+        except Exception:
+            progresses.append(0)
+
+    if not statuses:
+        return ("pending", 0)
+
+    if any(s == "failed" for s in statuses):
+        agg_status = "failed"
+    elif all(s == "completed" for s in statuses):
+        agg_status = "completed"
+    else:
+        agg_status = "scanning"
+
+    avg_progress = int(sum(progresses) / max(len(progresses), 1)) if progresses else 0
+    return (agg_status, avg_progress)
+
+
+async def list_vulnerabilities_for_scan_ids(
+    db: AsyncIOMotorDatabase,
+    scan_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """Return all vulnerabilities for given scan ids."""
+    if not scan_ids:
+        return []
+    cursor = db["vulnerabilities"].find({"scan_id": {"$in": scan_ids}})
+    vulns: List[Dict[str, Any]] = []
+    async for v in cursor:
+        v = dict(v)
+        v["id"] = str(v.get("_id"))
+        # scan_id is already stored as string
+        vulns.append(v)
+    return vulns
+
     scan_url = f"{base_url.rstrip('/')}/scan"
     try:
         async with httpx.AsyncClient(timeout=None) as client:
