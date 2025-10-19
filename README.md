@@ -47,3 +47,17 @@ Once running, visit:
 
 -   **Swagger UI**: http://localhost:8000/docs
 -   **ReDoc**: http://localhost:8000/redoc
+
+## Docker
+
+```bash
+docker build -t xployt-main-server:latest /Users/lakshith/Developer/xployt-ai/xployt-main-server
+```
+
+```bash
+docker run --name xployt-api \
+  --env-file /Users/lakshith/Developer/xployt-ai/xployt-main-server/.env \
+  -p 8000:8000 \
+  -v /Users/lakshith/Developer/xployt-ai/xployt-main-server/local_storage:/app/local_storage \
+  xployt-main-server:latest
+```
