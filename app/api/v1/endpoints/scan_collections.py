@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from app.core.security import verify_token
+from fastapi import APIRouter, Depends, HTTPException, status
 from sse_starlette.sse import EventSourceResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
@@ -132,12 +133,38 @@ async def get_collection_results(
 async def stream_collection(
     collection_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    token: str = "",
 ):
+    user_id = verify_token(token)
+    if not user_id:
+        raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+        
+    user = await db["users"].find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    user["id"] = str(user["_id"])
+    user = User(**user)
+
+    if not user:
+        raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
     async def event_generator():
         last_update = None
         while True:
-            collection = await db["scan_collections"].find_one({"_id": ObjectId(collection_id), "user_id": current_user.id})
+            collection = await db["scan_collections"].find_one({"_id": ObjectId(collection_id), "user_id": user.id})
             if not collection:
                 yield json.dumps({"error": "Collection not found"})
                 return
