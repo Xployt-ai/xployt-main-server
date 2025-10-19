@@ -31,6 +31,12 @@ async def start_scan(
             user_id=current_user.id,
         )
         return ApiResponse(data={"scan_id": payload.get("scan_id")}, message="Scan created")
+    except ValueError as e:
+        # Map insufficient credits or preconditions to 402 Payment Required
+        message = str(e)
+        if "Insufficient credits" in message:
+            raise HTTPException(status_code=402, detail=message)
+        raise HTTPException(status_code=400, detail=message)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start scan: {str(e)}")
 

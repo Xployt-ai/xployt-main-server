@@ -71,6 +71,98 @@ class CreditService:
                     message=f"Successfully added {topup_request.amount} credits"
                 )
 
+    async def debit_credits(
+        self,
+        user_id: str,
+        amount: Decimal,
+        description: str = "",
+        transaction_type: str = "scan_debit",
+    ) -> str:
+        """Debit credits from a user's balance for usage (e.g., scans).
+
+        Creates a transaction with positive amount and decreases the user's balance atomically.
+        Raises ValueError("Insufficient credits") if balance is not enough.
+        """
+        user_object_id = ObjectId(user_id)
+
+        user_exists = await self.db["users"].find_one({"_id": user_object_id})
+        if not user_exists:
+            raise ValueError("User not found")
+
+        amount_float = self._decimal_to_float(amount)
+
+        async with await self.db.client.start_session() as session:
+            async with session.start_transaction():
+                credits_doc = await self.db["user_credits"].find_one({"user_id": user_id}, session=session)
+                current_balance = float(credits_doc.get("balance", 0.0)) if credits_doc else 0.0
+
+                if current_balance < amount_float:
+                    raise ValueError("Insufficient credits")
+
+                transaction_data = {
+                    "user_id": user_id,
+                    "amount": amount_float,
+                    "transaction_type": transaction_type,
+                    "description": description or "Usage debit",
+                    "created_at": datetime.utcnow(),
+                    "status": "completed",
+                }
+
+                result = await self.db["credit_transactions"].insert_one(transaction_data, session=session)
+
+                await self.db["user_credits"].update_one(
+                    {"user_id": user_id},
+                    {
+                        "$inc": {"balance": -amount_float},
+                        "$set": {"last_updated": datetime.utcnow()},
+                    },
+                    upsert=True,
+                    session=session,
+                )
+
+                return str(result.inserted_id)
+
+    async def refund_credits(
+        self,
+        user_id: str,
+        amount: Decimal,
+        description: str = "",
+        transaction_type: str = "scan_refund",
+    ) -> str:
+        """Refund credits back to a user's balance (e.g., when a scan fails)."""
+        user_object_id = ObjectId(user_id)
+
+        user_exists = await self.db["users"].find_one({"_id": user_object_id})
+        if not user_exists:
+            raise ValueError("User not found")
+
+        amount_float = self._decimal_to_float(amount)
+
+        async with await self.db.client.start_session() as session:
+            async with session.start_transaction():
+                transaction_data = {
+                    "user_id": user_id,
+                    "amount": amount_float,
+                    "transaction_type": transaction_type,
+                    "description": description or "Usage refund",
+                    "created_at": datetime.utcnow(),
+                    "status": "completed",
+                }
+
+                result = await self.db["credit_transactions"].insert_one(transaction_data, session=session)
+
+                await self.db["user_credits"].update_one(
+                    {"user_id": user_id},
+                    {
+                        "$inc": {"balance": amount_float},
+                        "$set": {"last_updated": datetime.utcnow()},
+                    },
+                    upsert=True,
+                    session=session,
+                )
+
+                return str(result.inserted_id)
+
     async def get_user_balance(self, user_id: str) -> Decimal:
         user_exists = await self.db["users"].find_one({"_id": ObjectId(user_id)})
         if not user_exists:

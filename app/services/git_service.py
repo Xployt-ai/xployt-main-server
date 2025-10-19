@@ -1,6 +1,7 @@
 from pathlib import Path
 import subprocess
 from app.core.config import settings
+from typing import Set
 
 class GitService:
     def __init__(self, base_path: Path = settings.REPOS_STORAGE_PATH):
@@ -56,5 +57,46 @@ class GitService:
             return repo_path
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to pull repository: {e.stderr}")
+
+    def count_repo_loc(self, repo_name: str) -> int:
+        """Count lines of code in a locally cloned repository.
+
+        Skips common vendor/build/cache directories and counts only common code file extensions.
+        """
+        repo_path = self.get_repo_path(repo_name)
+        if not repo_path.exists():
+            raise ValueError("Repository not found locally. It must be cloned first.")
+
+        skip_dirs: Set[str] = {
+            ".git", "node_modules", "venv", ".venv", "dist", "build", "__pycache__",
+            ".idea", ".vscode", "target", "out"
+        }
+        exts: Set[str] = {
+            ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt",
+            ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift", ".scala",
+            ".sh", ".yml", ".yaml", ".json", ".toml", ".ini"
+        }
+
+        total = 0
+        for path in repo_path.rglob("*"):
+            if not path.is_file():
+                continue
+
+            # Skip files inside excluded directories
+            if any(part in skip_dirs for part in path.parts):
+                continue
+
+            if path.suffix.lower() not in exts:
+                continue
+
+            try:
+                with path.open("r", encoding="utf-8", errors="ignore") as f:
+                    for _ in f:
+                        total += 1
+            except Exception:
+                # Ignore unreadable files
+                continue
+
+        return total
 
 git_service = GitService() 

@@ -1,11 +1,15 @@
 import asyncio
 import time
 import json
-from typing import Dict, Any, List, AsyncGenerator
+from typing import Dict, Any, List, AsyncGenerator, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 from datetime import datetime, timezone
 import httpx
+from decimal import Decimal, ROUND_HALF_UP
+
+from app.services.credit_service import CreditService
+from app.services.git_service import git_service
 
 from app.models.scan import ScanCreate, VulnerabilityCreate
 
@@ -13,6 +17,13 @@ SCANNER_HOSTS = {
     "static_scanner": "http://localhost:8001",
     "llm_scanner": "http://llm-scanner-service:8000",
     "dast_scanner": "http://dast-scanner-service:8000",
+}
+
+# Per-LOC credit rates per scanner
+CREDIT_RATES_PER_LOC: Dict[str, float] = {
+    "static_scanner": 0.001,
+    "llm_scanner": 0.005,
+    "dast_scanner": 0.002,
 }
 
 async def update_scan_status(db: AsyncIOMotorDatabase, scan_id: str, status: str, progress_percent: int, progress_text: str):
@@ -117,7 +128,9 @@ async def run_scan_with_sse(
     scan_id: str,
     repository_name: str,
     scanner_name: str,
-    configurations: Dict[str, Any]
+    configurations: Dict[str, Any],
+    user_id: Optional[str] = None,
+    charged_credits: Optional[float] = None,
 ):
     print(f"Starting SSE-enabled scan {scan_id} for repo '{repository_name}' with scanner '{scanner_name}'.")
 
@@ -188,6 +201,14 @@ async def run_scan_with_sse(
 
         base_url = SCANNER_HOSTS.get(scanner_name)
         if not base_url:
+            # Refund if billing was applied
+            if user_id and charged_credits is not None:
+                try:
+                    await CreditService(db).refund_credits(
+                        user_id, Decimal(str(charged_credits)), "Scan failed refund"
+                    )
+                except Exception:
+                    pass
             raise ValueError(f"Scanner service not found: {scanner_name}")
 
         scan_url = f"{base_url.rstrip('/')}/scan"
@@ -199,6 +220,13 @@ async def run_scan_with_sse(
                     if response.status_code != 200:
                         error_msg = f"Scanner service returned status {response.status_code}"
                         await update_scan_status(db, scan_id, "failed", 100, error_msg)
+                        if user_id and charged_credits is not None:
+                            try:
+                                await CreditService(db).refund_credits(
+                                    user_id, Decimal(str(charged_credits)), "Scan failed refund"
+                                )
+                            except Exception:
+                                pass
                         return
 
                     await update_scan_status(db, scan_id, "scanning", 1, "Scan started")
@@ -208,6 +236,13 @@ async def run_scan_with_sse(
 
                         if "error" in update:
                             await update_scan_status(db, scan_id, "failed", 100, update["error"])
+                            if user_id and charged_credits is not None:
+                                try:
+                                    await CreditService(db).refund_credits(
+                                        user_id, Decimal(str(charged_credits)), "Scan failed refund"
+                                    )
+                                except Exception:
+                                    pass
                             return
 
                         # Get progress from the standardized response format
@@ -227,12 +262,26 @@ async def run_scan_with_sse(
             except Exception as e:
                 error_msg = f"Failed to connect to scanner: {str(e)}"
                 await update_scan_status(db, scan_id, "failed", 100, error_msg)
+                if user_id and charged_credits is not None:
+                    try:
+                        await CreditService(db).refund_credits(
+                            user_id, Decimal(str(charged_credits)), "Scan failed refund"
+                        )
+                    except Exception:
+                        pass
                 return
                 
     except Exception as e:
         error_message = f"SSE Scan failed: {str(e)}"
         print(error_message)
         await update_scan_status(db, scan_id, "failed", 100, error_message)
+        if user_id and charged_credits is not None:
+            try:
+                await CreditService(db).refund_credits(
+                    user_id, Decimal(str(charged_credits)), "Scan failed refund"
+                )
+            except Exception:
+                pass
 
 async def store_vulnerabilities(db: AsyncIOMotorDatabase, scan_id: str, vulnerabilities: List[Dict[str, Any]]):
     """Store vulnerabilities from scanner service in database using the new schema."""
@@ -329,10 +378,38 @@ async def run_scan_single_response(
     progress, status, and vulnerabilities. Persist scan and vulnerabilities
     to the database and return the payload.
     """
+    # Ensure repository exists locally
+    repo_path = git_service.get_repo_path(repository_name)
+    if not repo_path.exists():
+        raise ValueError("Repository not found locally. Please clone first.")
+
+    # Calculate cost based on LOC and per-scanner rate
+    try:
+        loc = git_service.count_repo_loc(repository_name)
+    except Exception as e:
+        raise ValueError(f"Failed to count repository LOC: {e}")
+
+    rate = float(CREDIT_RATES_PER_LOC.get(scanner_name, 0.001))
+    raw_cost = Decimal(loc) * Decimal(str(rate))
+    cost = raw_cost.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    # Attempt to debit credits prior to starting the scan
+    credit_service = CreditService(db)
+    try:
+        await credit_service.debit_credits(
+            user_id=user_id,
+            amount=cost,
+            description=f"Scan {scanner_name} on {repository_name}",
+            transaction_type="scan_debit",
+        )
+    except ValueError as e:
+        # Propagate to endpoint to map as 402
+        raise e
+
     scan_create = ScanCreate(
         repository_name=repository_name,
         scanner_name=scanner_name,
-        configurations=configurations,
+        configurations={**configurations, "charged_credits": float(cost)},
         user_id=user_id,
     )
 
@@ -365,6 +442,16 @@ async def run_scan_single_response(
     base_url = SCANNER_HOSTS.get(scanner_name)
     if not base_url:
         await update_scan_status(db, scan_id, "failed", 100, f"Scanner service not found: {scanner_name}")
+        # Refund if previously charged
+        try:
+            await credit_service.refund_credits(
+                user_id=user_id,
+                amount=cost,
+                description="Scan failed refund",
+                transaction_type="scan_refund",
+            )
+        except Exception:
+            pass
         return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}
 
 
@@ -380,6 +467,14 @@ async def create_scans_for_collection(
     """Create individual scans for each scanner and start them concurrently."""
     scan_ids: List[str] = []
 
+    # Calculate LOC once
+    repo_path = git_service.get_repo_path(repository_name)
+    if not repo_path.exists():
+        raise ValueError("Repository not found locally. Please clone first.")
+    loc = git_service.count_repo_loc(repository_name)
+
+    credit_service = CreditService(db)
+
     for scanner_name in scanners:
         scan_create = ScanCreate(
             repository_name=repository_name,
@@ -387,7 +482,41 @@ async def create_scans_for_collection(
             configurations=configurations or {},
             user_id=user_id,
         )
-        result = await db["scans"].insert_one(scan_create.model_dump())
+        # Compute cost per scanner
+        rate = float(CREDIT_RATES_PER_LOC.get(scanner_name, 0.001))
+        cost = (Decimal(loc) * Decimal(str(rate))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        # Try to debit credits for this child scan
+        charged = False
+        try:
+            await credit_service.debit_credits(
+                user_id=user_id,
+                amount=cost,
+                description=f"Scan {scanner_name} on {repository_name}",
+                transaction_type="scan_debit",
+            )
+            charged = True
+        except ValueError:
+            # Insufficient credits; create failed scan record
+            doc = {
+                **scan_create.model_dump(),
+                "status": "failed",
+                "progress_percent": 0,
+                "progress_text": "Insufficient credits",
+                "created_at": datetime.utcnow(),
+            }
+            result = await db["scans"].insert_one(doc)
+            scan_id = str(result.inserted_id)
+            scan_ids.append(scan_id)
+            continue
+
+        # Create scan with charged_credits marker
+        doc = {
+            **scan_create.model_dump(),
+            "configurations": {**(configurations or {}), "charged_credits": float(cost)},
+            "created_at": datetime.utcnow(),
+        }
+        result = await db["scans"].insert_one(doc)
         scan_id = str(result.inserted_id)
         scan_ids.append(scan_id)
 
@@ -399,6 +528,8 @@ async def create_scans_for_collection(
                 repository_name=repository_name,
                 scanner_name=scanner_name,
                 configurations=configurations or {},
+                user_id=user_id,
+                charged_credits=float(cost) if charged else None,
             )
         )
 
@@ -460,6 +591,15 @@ async def list_vulnerabilities_for_scan_ids(
             if response.status_code != 200:
                 error_msg = f"Scanner service returned status {response.status_code}"
                 await update_scan_status(db, scan_id, "failed", 100, error_msg)
+                try:
+                    await credit_service.refund_credits(
+                        user_id=user_id,
+                        amount=cost,
+                        description="Scan failed refund",
+                        transaction_type="scan_refund",
+                    )
+                except Exception:
+                    pass
                 return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}
 
             data = response.json()
@@ -484,4 +624,13 @@ async def list_vulnerabilities_for_scan_ids(
     except Exception as e:
         error_msg = f"Failed to connect to scanner: {str(e)}"
         await update_scan_status(db, scan_id, "failed", 100, error_msg)
+        try:
+            await credit_service.refund_credits(
+                user_id=user_id,
+                amount=cost,
+                description="Scan failed refund",
+                transaction_type="scan_refund",
+            )
+        except Exception:
+            pass
         return {"scan_id": scan_id, "progress": 0, "status": "failed", "vulnerabilities": []}
