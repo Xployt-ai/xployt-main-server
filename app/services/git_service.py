@@ -20,6 +20,9 @@ class GitService:
         # TODO: multi-tenancy
         return self.base_path / repo_name.replace("/", "_")
 
+    def get_absolute_repo_path_str(self, repo_name: str) -> str:
+        return str(self.get_repo_path(repo_name).resolve())
+
     def clone_repository(self, repo_url: str, repo_name: str, access_token: str) -> Path:
         """
         Clones a repository using the user's access token.

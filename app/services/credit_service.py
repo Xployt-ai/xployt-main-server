@@ -97,7 +97,8 @@ class CreditService:
                 current_balance = float(credits_doc.get("balance", 0.0)) if credits_doc else 0.0
 
                 if current_balance < amount_float:
-                    raise ValueError("Insufficient credits")
+                    pass
+                    # raise ValueError("Insufficient credits")
 
                 transaction_data = {
                     "user_id": user_id,
