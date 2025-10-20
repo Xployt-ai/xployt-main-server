@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
@@ -7,6 +7,7 @@ from app.api.deps import get_db, get_current_active_user_with_token
 from app.models.user import UserInDB
 from app.models.repository import Repository, RepositoryCreate, RepositoryWithLinkStatus, RepositoryBase
 from app.models.common import RepositoryOperation, ApiResponse
+from app.models.files import FileItem, FileContentResponse
 from app.services.github import get_user_repos, get_repo_details_by_name
 from app.services.git_service import git_service
 
@@ -128,3 +129,32 @@ async def pull_repository_updates(
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e)) 
+
+@router.get("/{repo_name:path}/tree", response_model=ApiResponse[FileItem])
+async def get_repository_tree(
+    repo_name: str,
+    current_user: UserInDB = Depends(get_current_active_user_with_token),
+):
+    try:
+        tree = git_service.get_repository_tree(repo_name)
+        return ApiResponse(data=tree, message="Repository tree retrieved successfully")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{repo_name:path}/file", response_model=ApiResponse[FileContentResponse])
+async def get_file_content(
+    repo_name: str,
+    path: str = Query(..., description="Relative path to file within repository"),
+    current_user: UserInDB = Depends(get_current_active_user_with_token),
+):
+    try:
+        content = git_service.read_file_content(repo_name, path)
+        return ApiResponse(data=content, message="File content retrieved successfully")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,7 +1,10 @@
 from pathlib import Path
 import subprocess
 from app.core.config import settings
-from typing import Set
+from typing import Set, List
+import mimetypes
+
+from app.models.files import FileItem, FileContentResponse
 
 from app.models.user import UserInDB
 from app.services.github import get_repo_details_by_name
@@ -101,6 +104,72 @@ class GitService:
                 continue
 
         return total
+
+    def _build_tree(self, path: Path) -> FileItem:
+        if path.is_dir():
+            children: List[FileItem] = []
+            for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                if child.name == ".git":
+                    continue
+                children.append(self._build_tree(child))
+            return FileItem(name=path.name, type="folder", children=children)
+        return FileItem(name=path.name, type="file")
+
+    def get_repository_tree(self, repo_name: str) -> FileItem:
+        repo_path = self.get_repo_path(repo_name)
+        if not repo_path.exists():
+            raise ValueError("Repository not found locally. It must be cloned first.")
+        return self._build_tree(repo_path)
+
+    def _guess_language(self, path: Path) -> str:
+        ext = path.suffix.lower()
+        mapping = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".tsx": "tsx",
+            ".jsx": "jsx",
+            ".go": "go",
+            ".rs": "rust",
+            ".java": "java",
+            ".kt": "kotlin",
+            ".c": "c",
+            ".h": "c",
+            ".cpp": "cpp",
+            ".hpp": "cpp",
+            ".cs": "csharp",
+            ".rb": "ruby",
+            ".php": "php",
+            ".swift": "swift",
+            ".scala": "scala",
+            ".sh": "bash",
+            ".yml": "yaml",
+            ".yaml": "yaml",
+            ".json": "json",
+            ".toml": "toml",
+            ".ini": "ini",
+            ".md": "markdown",
+        }
+        return mapping.get(ext, (mimetypes.guess_type(str(path))[0] or "text/plain"))
+
+    def read_file_content(self, repo_name: str, relative_path: str) -> FileContentResponse:
+        repo_path = self.get_repo_path(repo_name)
+        if not repo_path.exists():
+            raise ValueError("Repository not found locally. It must be cloned first.")
+
+        target_path = (repo_path / relative_path).resolve()
+        if not str(target_path).startswith(str(repo_path.resolve())):
+            raise ValueError("Invalid path.")
+        if not target_path.exists() or not target_path.is_file():
+            raise FileNotFoundError("File not found.")
+
+        try:
+            code = target_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            code = target_path.read_text(encoding="latin-1", errors="ignore")
+
+        language = self._guess_language(target_path)
+        return FileContentResponse(code=code, language=language)
 
     async def clone_github_repository(
         self,
