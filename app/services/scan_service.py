@@ -2,6 +2,7 @@ import asyncio
 import time
 import json
 from typing import Dict, Any, List, AsyncGenerator, Optional
+from app.models.user import UserInDB
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 from datetime import datetime, timezone
@@ -381,7 +382,11 @@ async def run_scan_single_response(
     # Ensure repository exists locally
     repo_path = git_service.get_repo_path(repository_name)
     if not repo_path.exists():
-        raise ValueError("Repository not found locally. Please clone first.")
+        current_user = await db["users"].find_one({"_id": ObjectId(user_id)})
+        if not current_user:
+            raise ValueError("User not found")
+        current_user = UserInDB(**current_user)
+        await git_service.clone_github_repository(repository_name, current_user)
 
     # Calculate cost based on LOC and per-scanner rate
     try:

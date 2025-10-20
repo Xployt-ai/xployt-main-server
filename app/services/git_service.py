@@ -3,6 +3,9 @@ import subprocess
 from app.core.config import settings
 from typing import Set
 
+from app.models.user import UserInDB
+from app.services.github import get_repo_details_by_name
+
 class GitService:
     def __init__(self, base_path: Path = settings.REPOS_STORAGE_PATH):
         self.base_path = base_path
@@ -98,5 +101,34 @@ class GitService:
                 continue
 
         return total
+
+    async def clone_github_repository(
+        self,
+        repo_name: str,
+        current_user: UserInDB,
+    ):
+        """
+        Clones a repository to the local file system.
+        This implicitly checks for user's permission by using their token.
+        """
+        if not current_user.github_access_token:
+            raise ValueError("GitHub token not found for user.")
+
+        try:
+            repo_details = await get_repo_details_by_name(
+                current_user.github_access_token, repo_name
+            )
+            clone_url = repo_details["clone_url"]
+
+            repo_path = self.clone_repository(
+                repo_url=clone_url,
+                repo_name=repo_name,
+                access_token=current_user.github_access_token
+            )
+            return repo_path
+        except RuntimeError as e:
+            raise RuntimeError(f"Failed to clone repository: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get repository details from GitHub: {e}")
 
 git_service = GitService() 
