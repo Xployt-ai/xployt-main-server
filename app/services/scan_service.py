@@ -557,10 +557,13 @@ async def compute_collection_status(
         try:
             progresses.append(int(scan.get("progress_percent", 0) or 0))
         except Exception:
-            progresses.append(0)
+            pass
 
     if not statuses:
         return ("pending", 0)
+
+    print("statuses: ", statuses)
+    print("progresses: ", progresses)
 
     if any(s == "failed" for s in statuses):
         agg_status = "failed"
