@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
+from pydantic import BaseModel
 
 from app.api.deps import get_db, get_current_active_user_with_token
 from app.models.user import UserInDB
@@ -12,6 +13,10 @@ from app.services.github import get_user_repos, get_repo_details_by_name
 from app.services.git_service import git_service
 
 router = APIRouter()
+
+class FileContentRequest(BaseModel):
+    repo_name: str
+    path: str
 
 @router.get("/", response_model=ApiResponse[List[RepositoryWithLinkStatus]])
 async def list_user_repositories(
@@ -143,14 +148,14 @@ async def get_repository_tree(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{repo_name:path}/file", response_model=ApiResponse[FileContentResponse])
+@router.post("/file", response_model=ApiResponse[FileContentResponse])
 async def get_file_content(
-    repo_name: str,
-    path: str = Query(..., description="Relative path to file within repository"),
+    request: FileContentRequest,
     current_user: UserInDB = Depends(get_current_active_user_with_token),
 ):
+    
     try:
-        content = git_service.read_file_content(repo_name, path)
+        content = git_service.read_file_content(request.repo_name, request.path)
         return ApiResponse(data=content, message="File content retrieved successfully")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
