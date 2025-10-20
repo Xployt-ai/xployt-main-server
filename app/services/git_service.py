@@ -80,7 +80,7 @@ class GitService:
         exts: Set[str] = {
             ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt",
             ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift", ".scala",
-            ".sh", ".yml", ".yaml", ".json", ".toml", ".ini"
+            ".sh", ".yml", ".yaml", ".toml", ".ini"
         }
 
         total = 0
