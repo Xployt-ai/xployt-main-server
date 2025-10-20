@@ -112,6 +112,8 @@ async def stream_scanner_progress(response: httpx.Response) -> AsyncGenerator[Di
                 continue
             print("Scanner response line:", line)
             try:
+                if line.startswith("data: "):
+                    line = line[6:]
                 data = json.loads(line)
                 # Validate expected format with progress and vulnerabilities
                 if "progress" not in data:
@@ -585,6 +587,7 @@ async def list_vulnerabilities_for_scan_ids(
     async for v in cursor:
         v = dict(v)
         v["id"] = str(v.get("_id"))
+        v.pop("_id", None)  # Remove the original ObjectId field
         # scan_id is already stored as string
         vulns.append(v)
     return vulns

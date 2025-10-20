@@ -2,7 +2,7 @@ from app.core.security import verify_token
 from fastapi import APIRouter, Depends, HTTPException, status
 from sse_starlette.sse import EventSourceResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from bson import ObjectId
+from bson import ObjectId, json_util
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -89,6 +89,28 @@ async def get_collection_status(
         "scans": scans,
     })
 
+@router.get("/{collection_id}", response_model=ApiResponse[dict])
+async def get_collection_details(
+    collection_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    collection = await db["scan_collections"].find_one({"_id": ObjectId(collection_id), "user_id": current_user.id})
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    collection_data = {
+        "id": str(collection["_id"]),
+        "repository_name": collection.get("repository_name"),
+        "scanners": collection.get("scanners", []),
+        "scan_ids": collection.get("scan_ids", []),
+        "status": collection.get("status", "pending"),
+        "progress_percent": int(collection.get("progress_percent", 0) or 0),
+        "created_at": collection.get("created_at"),
+        "finished_at": collection.get("finished_at"),
+    }
+
+    return ApiResponse(data=collection_data, message="Collection details retrieved successfully")
 
 @router.get("/", response_model=ApiResponse[List[dict]])
 async def list_collections(
@@ -119,7 +141,6 @@ async def get_collection_results(
     current_user: User = Depends(get_current_user),
 ):
     from app.services.scan_service import list_vulnerabilities_for_scan_ids
-
     collection = await db["scan_collections"].find_one({"_id": ObjectId(collection_id), "user_id": current_user.id})
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
@@ -163,6 +184,7 @@ async def stream_collection(
 
     async def event_generator():
         last_update = None
+
         while True:
             collection = await db["scan_collections"].find_one({"_id": ObjectId(collection_id), "user_id": user.id})
             if not collection:
@@ -189,11 +211,12 @@ async def stream_collection(
             }
 
             payload = json.dumps(state)
-            if payload != last_update:
-                last_update = payload
-                yield payload
+            yield payload
+
+            print(payload)
 
             if agg_status in ["completed", "failed"]:
+                print("Stream ending")
                 break
 
             await asyncio.sleep(1)
