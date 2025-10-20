@@ -217,7 +217,7 @@ async def run_scan_with_sse(
         async with httpx.AsyncClient(timeout=None) as client:
             try:
                 print("scanning url: ", scan_url)
-                async with client.stream("POST", scan_url, json={"path": repository_name}) as response:
+                async with client.stream("POST", scan_url, json={"path": repository_name.replace("/", "_")}) as response:
                     if response.status_code != 200:
                         error_msg = f"Scanner service returned status {response.status_code}"
                         await update_scan_status(db, scan_id, "failed", 100, error_msg)
