@@ -155,7 +155,12 @@ async def get_file_content(
 ):
     
     try:
-        content = git_service.read_file_content(request.repo_name, request.path)
+
+        paths = request.path.split('/')[1:]
+        # join paths to get path
+        path = '/'.join(paths)
+        print(request.repo_name, path)
+        content = git_service.read_file_content(request.repo_name, path)
         return ApiResponse(data=content, message="File content retrieved successfully")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
